@@ -1,5 +1,5 @@
 // game.js — прототип Tower Defense на Phaser 3.
-// Шаг 7: подключение Firebase (Firestore).
+// Шаг 9: сохранение рекорда в Firestore при GAME OVER.
 // Сохранены механики прошлых шагов: сетка, дорога, движение врагов, стрельба, анимации.
 // Логика разбита на маленькие методы, чтобы дальше удобно наращивать механики.
 //
@@ -7,8 +7,9 @@
 // поэтому здесь доступны оператор import и значения из других модулей.
 
 // База данных Firestore из firebase-config.js.
-// Пока не используется — пригодится на следующих шагах (рекорды, прогресс и т.п.).
 import { db } from './firebase-config.js';
+// Функции Firestore: doc — адрес документа, setDoc — запись данных.
+import { doc, setDoc } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 
 // ----------------------------- Константы -----------------------------
 const GRID_SIZE = 10;             // размер сетки: 10 на 10 клеток
@@ -252,6 +253,10 @@ class GameScene extends Phaser.Scene {
     this.lives = START_LIVES;
     this.isGameOver = false;
 
+    // Номер текущей волны. Полноценные волны добавим позже,
+    // пока значение не меняется — нужно для сохранения рекорда.
+    this.currentWave = 1;
+
     // Карта башен: towers[row][col] — объект Tower или null.
     this.towers = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(null));
 
@@ -405,6 +410,23 @@ class GameScene extends Phaser.Scene {
     if (this.spawnTimer) this.spawnTimer.remove(false); // прекращаем спавн
     this.showGameOver();
     console.log('GAME OVER');
+
+    // Отправляем рекорд в облако (не ждём ответа, чтобы игра не «зависла»).
+    this.saveRecord();
+  }
+
+  // Сохраняем рекорд игрока в Firestore: коллекция "leaderboard", документ "test_player".
+  async saveRecord() {
+    try {
+      await setDoc(doc(db, 'leaderboard', 'test_player'), {
+        wave: this.currentWave,
+        gold: this.gold,
+        savedAt: new Date().toISOString(),
+      });
+      console.log('Рекорд успешно сохранен в Firebase!');
+    } catch (error) {
+      console.error('Не удалось сохранить рекорд в Firebase:', error);
+    }
   }
 
   // Строим маршрут по угловым точкам PATH_WAYPOINTS.
