@@ -1,5 +1,5 @@
 // game.js — прототип Tower Defense на Phaser 3.
-// Шаг 9: сохранение рекорда в Firestore при GAME OVER.
+// Шаг 10: управляемые волны врагов с кнопкой старта.
 // Сохранены механики прошлых шагов: сетка, дорога, движение врагов, стрельба, анимации.
 // Логика разбита на маленькие методы, чтобы дальше удобно наращивать механики.
 //
@@ -26,8 +26,13 @@ const TOWER_COST = 25;            // стоимость постройки ба�
 const ENEMY_COLOR = 0xe74c3c;     // цвет врага (красный квадрат)
 const ENEMY_HIT_COLOR = 0xffffff; // вспышка врага при попадании
 const ENEMY_SPEED = 2;            // скорость врага: клеток в секунду
-const ENEMY_HP = 3;               // здоровье врага
-const SPAWN_DELAY = 3000;         // интервал появления врагов, мс (3 секунды)
+const ENEMY_HP = 3;               // базовое здоровье врага
+
+// ----------------------------- Волны -----------------------------
+const WAVE_START_ENEMIES = 5;     // сколько врагов в 1-й волне
+const WAVE_HP_GROWTH = 2;         // прирост HP врагов за каждую волну
+const SPAWN_INTERVAL = 1000;      // задержка между спавном врагов, мс (1 секунда)
+const WAVE_CLEAR_BONUS = 25;      // бонус золота за зачистку волны
 
 const PROJECTILE_COLOR = 0xf1c40f; // цвет снаряда (жёлтый)
 const PROJECTILE_SPEED = 10;       // скорость снаряда: клеток в секунду
@@ -54,14 +59,14 @@ const PATH_WAYPOINTS = [
 // ------------------------------ Враг ------------------------------
 // Враг — красный квадрат, который плавно едет по клеткам маршрута.
 class Enemy extends Phaser.GameObjects.Rectangle {
-  constructor(scene, pathCells) {
+  constructor(scene, pathCells, hp = ENEMY_HP) {
     super(scene, 0, 0, 1, 1, ENEMY_COLOR);
 
     this.pathCells = pathCells; // полный список клеток маршрута ({row, col})
     this.segment = 0;           // индекс текущего отрезка пути
     this.progress = 0;          // прогресс по отрезку: 0..1
     this.lastCellSize = 0;      // чтобы не пересчитывать размер каждый кадр
-    this.hp = ENEMY_HP;         // здоровье
+    this.hp = hp;               // здоровье (по умолчанию базовое)
     this.isDead = false;        // мёртв/исчезает — не двигается и не цель для башен
 
     scene.add.existing(this);   // добавляем объект в сцену
@@ -253,9 +258,12 @@ class GameScene extends Phaser.Scene {
     this.lives = START_LIVES;
     this.isGameOver = false;
 
-    // Номер текущей волны. Полноценные волны добавим позже,
-    // пока значение не меняется — нужно для сохранения рекорда.
-    this.currentWave = 1;
+    // Состояние волн.
+    this.currentWave = 0;        // номер волны (до старта первой — 0)
+    this.isWaveActive = false;   // идёт ли волна прямо сейчас
+    this.enemiesLeftToSpawn = 0; // сколько врагов волны ещё не выпущено
+    this.waveHp = ENEMY_HP;      // здоровье врагов текущей волны
+    this.waveSpawnTimer = null;  // таймер порционного спавна
 
     // Карта башен: towers[row][col] — объект Tower или null.
     this.towers = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(null));
@@ -288,14 +296,7 @@ class GameScene extends Phaser.Scene {
     // Клик/тап по сцене — строим башню в нужной клетке.
     this.input.on('pointerdown', this.handlePointerDown, this);
 
-    // Тестовая волна: первый враг сразу, дальше — каждые 3 секунды.
-    this.spawnEnemy();
-    this.spawnTimer = this.time.addEvent({
-      delay: SPAWN_DELAY,
-      callback: this.spawnEnemy,
-      callbackScope: this,
-      loop: true,
-    });
+    // Волны запускаются вручную кнопкой "[ СТАРТ ВОЛНЫ ]".
   }
 
   // ------------------------- Интерфейс (UI) -------------------------
@@ -314,6 +315,29 @@ class GameScene extends Phaser.Scene {
       })
       .setOrigin(1, 0) // якорим к правому верхнему углу
       .setDepth(100);
+
+    // Кнопка запуска следующей волны (левый верхний угол).
+    this.startButton = this.add
+      .text(0, 0, '[ СТАРТ ВОЛНЫ ]', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '20px',
+        color: '#2ecc71',
+        backgroundColor: '#00000088',
+        padding: { x: 10, y: 6 },
+        stroke: '#000000',
+        strokeThickness: 3,
+        fontStyle: 'bold',
+      })
+      .setOrigin(0, 0) // якорим к левому верхнему углу
+      .setInteractive({ useHandCursor: true })
+      .setDepth(100);
+
+    // По клику/тапу запускаем следующую волну.
+    this.startButton.on('pointerdown', (pointer, localX, localY, event) => {
+      // Не даём клику уйти в сцену (иначе он мог бы поставить башню).
+      if (event && event.stopPropagation) event.stopPropagation();
+      this.startNextWave();
+    });
 
     // Всплывающее предупреждение (например, "не хватает золота").
     this.messageText = this.add
@@ -350,9 +374,11 @@ class GameScene extends Phaser.Scene {
       .setVisible(false);
   }
 
-  // Обновляем текст панели при изменении золота/жизней.
+  // Обновляем текст панели при изменении волны/жизней/золота.
   updateUI() {
-    this.uiText.setText(`Жизни: ${this.lives}\nЗолото: ${this.gold}`);
+    this.uiText.setText(
+      `Волна: ${this.currentWave}\nЖизни: ${this.lives}\nЗолото: ${this.gold}`
+    );
   }
 
   // Показываем всплывающее сообщение и плавно гасим его.
@@ -407,7 +433,7 @@ class GameScene extends Phaser.Scene {
     if (this.isGameOver) return;
 
     this.isGameOver = true;
-    if (this.spawnTimer) this.spawnTimer.remove(false); // прекращаем спавн
+    if (this.waveSpawnTimer) this.waveSpawnTimer.remove(false); // прекращаем спавн
     this.showGameOver();
     console.log('GAME OVER');
 
@@ -489,6 +515,11 @@ class GameScene extends Phaser.Scene {
     this.uiText.setPosition(width - pad, pad);
     this.uiText.setStyle({ fontSize: `${Math.round(uiSize)}px` });
 
+    // Кнопка старта волны — левый верхний угол; прячем, пока волна активна.
+    this.startButton.setPosition(pad, pad);
+    this.startButton.setStyle({ fontSize: `${Math.round(uiSize)}px` });
+    this.startButton.setVisible(!this.isWaveActive);
+
     this.messageText.setPosition(width / 2, height * 0.8);
     this.messageText.setStyle({ fontSize: `${Math.round(uiSize * 0.9)}px` });
 
@@ -546,12 +577,64 @@ class GameScene extends Phaser.Scene {
     return this.road[row] !== undefined && this.road[row][col] === true;
   }
 
-  // Создаём нового врага в начале маршрута.
-  spawnEnemy() {
-    if (this.isGameOver) return;
+  // ------------------------- Волны -------------------------
+  // Запускаем следующую волну (вызывается кликом по кнопке).
+  startNextWave() {
+    if (this.isGameOver || this.isWaveActive) return;
 
-    const enemy = new Enemy(this, this.pathCells);
+    this.currentWave += 1;
+    this.isWaveActive = true;
+    this.startButton.setVisible(false); // кнопка скрыта во время волны
+
+    // Количество врагов растёт с каждой волной.
+    this.enemiesLeftToSpawn = WAVE_START_ENEMIES + this.currentWave * 2;
+    // Здоровье врагов в этой волне тоже растёт.
+    this.waveHp = ENEMY_HP + this.currentWave * WAVE_HP_GROWTH;
+
+    this.updateUI();
+    this.showMessage(`Волна ${this.currentWave} началась!`);
+
+    // Порционный спавн: один враг раз в секунду.
+    this.waveSpawnTimer = this.time.addEvent({
+      delay: SPAWN_INTERVAL,
+      callback: this.spawnWaveEnemy,
+      callbackScope: this,
+      loop: true,
+    });
+  }
+
+  // Выпускаем одного врага текущей волны с её здоровьем.
+  spawnWaveEnemy() {
+    if (this.isGameOver || this.enemiesLeftToSpawn <= 0) return;
+
+    const enemy = new Enemy(this, this.pathCells, this.waveHp);
     this.enemies.push(enemy);
+    this.enemiesLeftToSpawn -= 1;
+
+    // Все враги выпущены — таймер порционного спавна больше не нужен.
+    if (this.enemiesLeftToSpawn === 0 && this.waveSpawnTimer) {
+      this.waveSpawnTimer.remove(false);
+      this.waveSpawnTimer = null;
+    }
+  }
+
+  // Волна завершена, если все враги выпущены и на поле никого живого нет.
+  checkWaveEnd() {
+    if (!this.isWaveActive || this.enemiesLeftToSpawn > 0) return;
+
+    const alive = this.enemies.some((enemy) => enemy.active && !enemy.isDead);
+    if (alive) return;
+
+    this.endWave();
+  }
+
+  // Завершаем волну: начисляем бонус и возвращаем кнопку старта.
+  endWave() {
+    this.isWaveActive = false;
+    this.gold += WAVE_CLEAR_BONUS;
+    this.updateUI();
+    this.startButton.setVisible(true);
+    this.showMessage(`Волна ${this.currentWave} зачищена! +${WAVE_CLEAR_BONUS} золота`);
   }
 
   // Обработка клика: переводим координаты указателя в индексы клетки.
@@ -611,6 +694,9 @@ class GameScene extends Phaser.Scene {
     // Чистим удалённые объекты.
     this.enemies = this.enemies.filter((enemy) => enemy.active);
     this.projectiles = this.projectiles.filter((projectile) => projectile.active);
+
+    // Проверяем, не закончилась ли волна.
+    this.checkWaveEnd();
   }
 }
 
