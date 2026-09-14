@@ -253,6 +253,9 @@ class GameScene extends Phaser.Scene {
   }
 
   create() {
+    // Разворачиваем мини-апп на весь экран Telegram и определяем игрока.
+    this.initTelegram();
+
     // Состояние игрока (экономика и жизни).
     this.gold = START_GOLD;
     this.lives = START_LIVES;
@@ -441,10 +444,39 @@ class GameScene extends Phaser.Scene {
     this.saveRecord();
   }
 
-  // Сохраняем рекорд игрока в Firestore: коллекция "leaderboard", документ "test_player".
+  // Инициализация Telegram Mini App (если игра открыта внутри Telegram).
+  initTelegram() {
+    const telegram = window.Telegram ? window.Telegram.WebApp : null;
+    if (!telegram) return;
+
+    telegram.ready(); // сообщаем Telegram, что приложение готово
+    telegram.expand(); // разворачиваем на весь экран
+  }
+
+  // Данные игрока: id (для документа) и ник (из профиля Telegram).
+  getPlayerInfo() {
+    const telegram = window.Telegram ? window.Telegram.WebApp : null;
+    const user = telegram ? telegram.initDataUnsafe.user : null;
+
+    // Внутри Telegram — ник и id из профиля пользователя.
+    if (user) {
+      const nick = user.username
+        ? '@' + user.username
+        : [user.first_name, user.last_name].filter(Boolean).join(' ') || 'Игрок';
+      return { id: String(user.id), nick: nick };
+    }
+
+    // Игра открыта в обычном браузере — считаем гостем.
+    return { id: 'test_player', nick: 'Гость' };
+  }
+
+  // Сохраняем рекорд игрока в Firestore: коллекция "leaderboard",
+  // документ — id игрока в Telegram (у каждого свой рекорд).
   async saveRecord() {
+    const player = this.getPlayerInfo();
     try {
-      await setDoc(doc(db, 'leaderboard', 'test_player'), {
+      await setDoc(doc(db, 'leaderboard', player.id), {
+        nick: player.nick,
         wave: this.currentWave,
         gold: this.gold,
         savedAt: new Date().toISOString(),

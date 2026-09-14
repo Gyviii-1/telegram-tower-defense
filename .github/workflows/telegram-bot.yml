@@ -1,0 +1,33 @@
+name: Telegram bot
+
+# Бот работает в облаке GitHub 24/7 и не требует включённого ПК.
+# Каждый запуск живёт ~5ч50м, затем автоматически стартует новый (каждые 6 часов).
+# Пока компьютер выключен — бот продолжает отвечать.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: telegram-bot
+  cancel-in-progress: false
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r bot/requirements.txt
+
+      - name: Run bot
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: python bot/bot.py
