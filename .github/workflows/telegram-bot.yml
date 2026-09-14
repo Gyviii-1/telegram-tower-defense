@@ -30,4 +30,5 @@ jobs:
       - name: Run bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        run: python bot/bot.py
+          PYTHONUNBUFFERED: "1"
+        run: python -u bot/bot.py
