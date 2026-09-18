@@ -293,6 +293,9 @@ class GameScene extends Phaser.Scene {
 
     // Первая отрисовка и подписка на изменение размера окна/экрана.
     this.layout();
+    // Сначала снимаем старый обработчик (важно при рестарте сцены),
+    // затем вешаем заново — иначе при перезапуске они накопятся.
+    this.scale.off('resize', this.layout, this);
     this.scale.on('resize', this.layout, this);
     this.updateUI();
 
@@ -375,6 +378,29 @@ class GameScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setDepth(101)
       .setVisible(false);
+
+    // Кнопка перезапуска игры (появляется только на экране Game Over).
+    this.restartButton = this.add
+      .text(0, 0, 'ЗАНОВО', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '28px',
+        color: '#ffffff',
+        backgroundColor: '#2ecc71',
+        padding: { x: 24, y: 12 },
+        stroke: '#000000',
+        strokeThickness: 3,
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true })
+      .setDepth(101)
+      .setVisible(false);
+
+    // По клику/тапу перезапускаем игру.
+    this.restartButton.on('pointerdown', (pointer, localX, localY, event) => {
+      if (event && event.stopPropagation) event.stopPropagation();
+      this.restartGame();
+    });
   }
 
   // Обновляем текст панели при изменении волны/жизней/золота.
@@ -402,6 +428,8 @@ class GameScene extends Phaser.Scene {
   showGameOver() {
     this.overlay.setVisible(true);
     this.gameOverText.setVisible(true);
+    this.startButton.setVisible(false); // убираем кнопку старта волны
+    this.restartButton.setVisible(true); // показываем кнопку перезапуска
 
     // Небольшой эффект появления.
     this.gameOverText.setScale(0.5);
@@ -411,6 +439,12 @@ class GameScene extends Phaser.Scene {
       duration: 300,
       ease: 'Back.easeOut',
     });
+  }
+
+  // Полный перезапуск игры без перезагрузки страницы.
+  // scene.restart() заново вызывает create() и сбрасывает всё состояние.
+  restartGame() {
+    this.scene.restart();
   }
 
   // ------------------------- Игровые события -------------------------
@@ -550,7 +584,7 @@ class GameScene extends Phaser.Scene {
     // Кнопка старта волны — левый верхний угол; прячем, пока волна активна.
     this.startButton.setPosition(pad, pad);
     this.startButton.setStyle({ fontSize: `${Math.round(uiSize)}px` });
-    this.startButton.setVisible(!this.isWaveActive);
+    this.startButton.setVisible(!this.isWaveActive && !this.isGameOver);
 
     this.messageText.setPosition(width / 2, height * 0.8);
     this.messageText.setStyle({ fontSize: `${Math.round(uiSize * 0.9)}px` });
@@ -560,6 +594,11 @@ class GameScene extends Phaser.Scene {
 
     this.gameOverText.setPosition(width / 2, height / 2);
     this.gameOverText.setStyle({ fontSize: `${Math.round(Math.min(width, height) * 0.13)}px` });
+
+    // Кнопка перезапуска — под надписью GAME OVER; видна только на проигрыше.
+    this.restartButton.setPosition(width / 2, height / 2 + Math.min(width, height) * 0.16);
+    this.restartButton.setStyle({ fontSize: `${Math.round(Math.min(width, height) * 0.05)}px` });
+    this.restartButton.setVisible(this.isGameOver);
   }
 
   // Рисуем клетки сетки. Дорогу подсвечиваем другим цветом.
