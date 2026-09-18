@@ -31,15 +31,17 @@ const TOWER_TYPES = {
     range: 2.5,
     fireRate: 1,
     damage: 1,
+    accuracy: 1, // всегда попадает
     texture: 'tower',
     color: 0x2ecc71,
   },
   minigun: {
     name: 'Миниган',
     cost: 40,
-    range: 2.0,
+    range: 3.5,      // бьёт дальше стрелка
     fireRate: 4,
     damage: 1,
+    accuracy: 0.7,   // 70% попаданий, 30% — разброс
     texture: 'tower_minigun',
     color: 0x3498db,
   },
@@ -190,36 +192,63 @@ class Enemy extends Phaser.GameObjects.Rectangle {
 // ------------------------------ Снаряд ------------------------------
 // Маленький жёлтый кружок, который летит от башни точно в цель (самонаведение).
 class Projectile extends Phaser.GameObjects.Arc {
-  constructor(scene, x, y, target, damage = PROJECTILE_DAMAGE) {
+  constructor(scene, x, y, target, damage = PROJECTILE_DAMAGE, willHit = true) {
     super(scene, x, y, Math.max(3, scene.cellSize * 0.12), 0, 360, false, PROJECTILE_COLOR);
 
-    this.target = target; // враг, в которого летим
-    this.damage = damage; // урон башни (растёт с уровнем)
+    this.target = target;   // враг, в которого стреляли
+    this.damage = damage;   // урон башни (растёт с уровнем)
+    this.willHit = willHit; // попадёт ли этот выстрел
+
+    if (!willHit) {
+      // Промах: выбираем случайную точку рядом с целью (разброс).
+      const spread = scene.cellSize * 1.2;
+      this.missX = target.x + Phaser.Math.Between(-spread, spread);
+      this.missY = target.y + Phaser.Math.Between(-spread, spread);
+      this.setAlpha(0.7); // промахи чуть бледнее
+    }
+
     scene.add.existing(this);
     this.setDepth(4); // снаряды поверх всего игрового поля
   }
 
   // Летим к цели; при достижении наносим урон и исчезаем.
   flyToTarget(delta, cellSize) {
-    // Цель уже мертва/удалена — снаряд просто исчезает.
-    if (!this.target.active || this.target.isDead) {
-      this.destroy();
+    const step = PROJECTILE_SPEED * cellSize * (delta / 1000);
+
+    // Точный выстрел: самонаведение на врага.
+    if (this.willHit) {
+      // Цель уже мертва/удалена — снаряд просто исчезает.
+      if (!this.target.active || this.target.isDead) {
+        this.destroy();
+        return;
+      }
+
+      const dx = this.target.x - this.x;
+      const dy = this.target.y - this.y;
+      const distance = Math.hypot(dx, dy);
+
+      // Долетели: наносим урон и удаляем снаряд.
+      if (distance <= step) {
+        this.target.takeDamage(this.damage);
+        this.destroy();
+        return;
+      }
+
+      this.x += (dx / distance) * step;
+      this.y += (dy / distance) * step;
       return;
     }
 
-    const step = PROJECTILE_SPEED * cellSize * (delta / 1000);
-    const dx = this.target.x - this.x;
-    const dy = this.target.y - this.y;
+    // Промах: летим в точку разброса, урона не наносим.
+    const dx = this.missX - this.x;
+    const dy = this.missY - this.y;
     const distance = Math.hypot(dx, dy);
 
-    // Долетели: наносим урон и удаляем снаряд.
     if (distance <= step) {
-      this.target.takeDamage(this.damage);
       this.destroy();
       return;
     }
 
-    // Двигаемся к текущей позиции цели (самонаведение).
     this.x += (dx / distance) * step;
     this.y += (dy / distance) * step;
   }
@@ -240,6 +269,7 @@ class Tower {
     this.range = type.range;         // радиус атаки, клеток
     this.fireRate = type.fireRate;   // выстрелов в секунду
     this.damage = type.damage;       // урон за выстрел
+    this.accuracy = type.accuracy !== undefined ? type.accuracy : 1; // шанс попадания
     this.cooldown = 0;               // время до следующего выстрела, сек
     this.totalSpent = type.cost;     // сколько золота вложено (для продажи)
     this.sprite = null;              // картинка башни (создаётся сценой)
@@ -312,8 +342,10 @@ class Tower {
   }
 
   // Создаём снаряд, летящий в цель.
+  // С шансом (1 - accuracy) выстрел уходит в «разброс» и не наносит урон.
   shoot(pos, target) {
-    const projectile = new Projectile(this.scene, pos.x, pos.y, target, this.damage);
+    const willHit = Math.random() < this.accuracy;
+    const projectile = new Projectile(this.scene, pos.x, pos.y, target, this.damage, willHit);
     this.scene.projectiles.push(projectile);
   }
 }
@@ -491,7 +523,7 @@ class GameScene extends Phaser.Scene {
     this.towerMenu = this.add.container(0, 0).setDepth(102).setVisible(false);
 
     this.towerMenuBg = this.add
-      .rectangle(0, 0, 240, 140, 0x000000, 0.9)
+      .rectangle(0, 0, 250, 165, 0x000000, 0.9)
       .setStrokeStyle(2, TOWER_COLOR)
       .setInteractive();
     // Клик по фону меню не должен «проваливаться» в игровое поле.
@@ -500,16 +532,18 @@ class GameScene extends Phaser.Scene {
     });
 
     this.towerMenuTitle = this.add
-      .text(0, -50, '', {
+      .text(0, -52, '', {
         fontFamily: 'Arial, sans-serif',
-        fontSize: '18px',
+        fontSize: '17px',
         color: '#ffffff',
         fontStyle: 'bold',
+        align: 'center',
+        lineSpacing: 4,
       })
       .setOrigin(0.5);
 
     this.towerMenuUpgrade = this.add
-      .text(0, -5, '', {
+      .text(0, 10, '', {
         fontFamily: 'Arial, sans-serif',
         fontSize: '18px',
         color: '#2ecc71',
@@ -518,7 +552,7 @@ class GameScene extends Phaser.Scene {
       .setInteractive({ useHandCursor: true });
 
     this.towerMenuSell = this.add
-      .text(0, 40, '', {
+      .text(0, 52, '', {
         fontFamily: 'Arial, sans-serif',
         fontSize: '18px',
         color: '#e74c3c',
@@ -613,7 +647,12 @@ class GameScene extends Phaser.Scene {
     const tower = this.selectedTower;
     if (!tower) return;
 
-    this.towerMenuTitle.setText(`${tower.config.name} · ур. ${tower.level}`);
+    this.towerMenuTitle.setText(
+      `${tower.config.name} · ур. ${tower.level}\n` +
+        `Радиус ${tower.range.toFixed(1)} · ${tower.fireRate.toFixed(1)}/с · точн. ${Math.round(
+          tower.accuracy * 100
+        )}%`
+    );
 
     if (tower.canUpgrade()) {
       this.towerMenuUpgrade.setText(`Улучшить (${tower.getUpgradeCost()})`).setColor('#2ecc71');
@@ -632,8 +671,8 @@ class GameScene extends Phaser.Scene {
     const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
     const width = this.scale.width;
     const height = this.scale.height;
-    const halfW = 120; // половина ширины фона меню (240 / 2)
-    const halfH = 70;  // половина высоты фона меню (140 / 2)
+    const halfW = 125; // половина ширины фона меню (250 / 2)
+    const halfH = 82;  // половина высоты фона меню (165 / 2)
     const margin = 8;
 
     let x = pos.x;
