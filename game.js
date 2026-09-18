@@ -27,10 +27,17 @@ const TOWER_MAX_LEVEL = 5;        // максимальный уровень б�
 const TOWER_UPGRADE_COST = 20;    // базовая цена улучшения (умножается на уровень)
 const TOWER_SELL_RATIO = 0.7;     // возврат золота при продаже (70% вложенного)
 
-const ENEMY_COLOR = 0xe74c3c;     // цвет врага (красный квадрат)
 const ENEMY_HIT_COLOR = 0xffffff; // вспышка врага при попадании
-const ENEMY_SPEED = 2;            // скорость врага: клеток в секунду
-const ENEMY_HP = 3;               // базовое здоровье врага
+const ENEMY_HP = 3;               // базовое здоровье врага по умолчанию
+
+// Типы врагов. hp — базовое здоровье, speed — клеток/сек,
+// color — цвет, reward — золото за убийство, size — размер от клетки.
+const ENEMY_TYPES = {
+  normal: { hp: 3,  speed: 2.0, color: 0xe74c3c, reward: 10,  size: 0.60 },
+  fast:   { hp: 2,  speed: 4.0, color: 0xf39c12, reward: 8,   size: 0.45 },
+  tank:   { hp: 12, speed: 1.2, color: 0x8e44ad, reward: 30,  size: 0.72 },
+  boss:   { hp: 50, speed: 0.9, color: 0x2c3e50, reward: 120, size: 0.85 },
+};
 
 // ----------------------------- Волны -----------------------------
 const WAVE_START_ENEMIES = 5;     // сколько врагов в 1-й волне
@@ -44,7 +51,6 @@ const PROJECTILE_DAMAGE = 1;       // урон за попадание
 
 const START_GOLD = 100;           // стартовое золото игрока
 const START_LIVES = 10;           // стартовые жизни игрока
-const KILL_REWARD = 10;           // награда за убитого врага
 
 // Маршрут врагов задаётся угловыми точками (по клеткам сетки).
 // Враги заходят слева сверху (0,0), идут змейкой и выходят справа снизу (9,9).
@@ -63,8 +69,16 @@ const PATH_WAYPOINTS = [
 // ------------------------------ Враг ------------------------------
 // Враг — красный квадрат, который плавно едет по клеткам маршрута.
 class Enemy extends Phaser.GameObjects.Rectangle {
-  constructor(scene, pathCells, hp = ENEMY_HP) {
-    super(scene, 0, 0, 1, 1, ENEMY_COLOR);
+  constructor(scene, pathCells, typeKey = 'normal', hp = ENEMY_HP) {
+    const type = ENEMY_TYPES[typeKey] || ENEMY_TYPES.normal;
+    super(scene, 0, 0, 1, 1, type.color);
+
+    this.typeKey = typeKey;      // ключ типа ("normal", "fast", "tank", "boss")
+    this.config = type;          // настройки типа
+    this.baseColor = type.color; // цвет для возврата после вспышки
+    this.speed = type.speed;     // скорость: клеток в секунду
+    this.reward = type.reward;   // золото за убийство
+    this.sizeFactor = type.size; // размер относительно клетки
 
     this.pathCells = pathCells; // полный список клеток маршрута ({row, col})
     this.segment = 0;           // индекс текущего отрезка пути
@@ -81,13 +95,13 @@ class Enemy extends Phaser.GameObjects.Rectangle {
   moveAlongPath(delta, cellSize, offsetX, offsetY) {
     // Размер квадрата зависит от размера клетки (обновляем только при изменении).
     if (cellSize !== this.lastCellSize) {
-      const size = cellSize * 0.6;
+      const size = cellSize * this.sizeFactor;
       this.setSize(size, size);
       this.lastCellSize = cellSize;
     }
 
     // Прогресс в клетках за кадр: скорость (клеток/сек) * время (сек).
-    this.progress += ENEMY_SPEED * (delta / 1000);
+    this.progress += this.speed * (delta / 1000);
 
     // Переходим на следующий отрезок, если текущий пройден.
     while (this.progress >= 1 && this.segment < this.pathCells.length - 1) {
@@ -123,7 +137,7 @@ class Enemy extends Phaser.GameObjects.Rectangle {
     if (this.hp > 0) {
       this.setFillStyle(ENEMY_HIT_COLOR);
       this.scene.time.delayedCall(80, () => {
-        if (this.active && !this.isDead) this.setFillStyle(ENEMY_COLOR);
+        if (this.active && !this.isDead) this.setFillStyle(this.baseColor);
       });
       return;
     }
@@ -298,7 +312,7 @@ class GameScene extends Phaser.Scene {
     this.currentWave = 0;        // номер волны (до старта первой — 0)
     this.isWaveActive = false;   // идёт ли волна прямо сейчас
     this.enemiesLeftToSpawn = 0; // сколько врагов волны ещё не выпущено
-    this.waveHp = ENEMY_HP;      // здоровье врагов текущей волны
+    this.waveQueue = [];         // очередь типов врагов текущей волны
     this.waveSpawnTimer = null;  // таймер порционного спавна
 
     // Выбранная башня (для меню улучшения/продажи).
@@ -625,9 +639,9 @@ class GameScene extends Phaser.Scene {
   }
 
   // ------------------------- Игровые события -------------------------
-  // Враг убит башней — начисляем золото.
-  onEnemyKilled() {
-    this.gold += KILL_REWARD;
+  // Враг убит башней — начисляем золото по типу врага.
+  onEnemyKilled(enemy) {
+    this.gold += enemy.reward;
     this.updateUI();
   }
 
@@ -839,6 +853,25 @@ class GameScene extends Phaser.Scene {
   }
 
   // ------------------------- Волны -------------------------
+  // Составляем список типов врагов для волны.
+  // Простые правила: fast появляются со 2-й волны, tank — с 3-й,
+  // босс — в конце каждой 5-й волны.
+  buildWaveComposition(wave) {
+    const count = WAVE_START_ENEMIES + wave * 2;
+    const queue = [];
+
+    for (let i = 0; i < count; i++) {
+      let typeKey = 'normal';
+      if (wave >= 2 && i % 4 === 1) typeKey = 'fast';
+      if (wave >= 3 && i % 5 === 3) typeKey = 'tank';
+      queue.push(typeKey);
+    }
+
+    if (wave % 5 === 0) queue.push('boss');
+
+    return queue;
+  }
+
   // Запускаем следующую волну (вызывается кликом по кнопке).
   startNextWave() {
     if (this.isGameOver || this.isWaveActive) return;
@@ -847,10 +880,9 @@ class GameScene extends Phaser.Scene {
     this.isWaveActive = true;
     this.startButton.setVisible(false); // кнопка скрыта во время волны
 
-    // Количество врагов растёт с каждой волной.
-    this.enemiesLeftToSpawn = WAVE_START_ENEMIES + this.currentWave * 2;
-    // Здоровье врагов в этой волне тоже растёт.
-    this.waveHp = ENEMY_HP + this.currentWave * WAVE_HP_GROWTH;
+    // Собираем состав волны и берём из него количество врагов.
+    this.waveQueue = this.buildWaveComposition(this.currentWave);
+    this.enemiesLeftToSpawn = this.waveQueue.length;
 
     this.updateUI();
     this.showMessage(`Волна ${this.currentWave} началась!`);
@@ -864,11 +896,15 @@ class GameScene extends Phaser.Scene {
     });
   }
 
-  // Выпускаем одного врага текущей волны с её здоровьем.
+  // Выпускаем одного врага текущей волны.
   spawnWaveEnemy() {
     if (this.isGameOver || this.enemiesLeftToSpawn <= 0) return;
 
-    const enemy = new Enemy(this, this.pathCells, this.waveHp);
+    const typeKey = this.waveQueue.shift() || 'normal';
+    // Здоровье = базовое у типа + прирост за номер волны.
+    const hp = ENEMY_TYPES[typeKey].hp + (this.currentWave - 1) * WAVE_HP_GROWTH;
+
+    const enemy = new Enemy(this, this.pathCells, typeKey, hp);
     this.enemies.push(enemy);
     this.enemiesLeftToSpawn -= 1;
 
