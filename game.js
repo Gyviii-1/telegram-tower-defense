@@ -9,7 +9,7 @@
 // База данных Firestore из firebase-config.js.
 import { db } from './firebase-config.js';
 // Функции Firestore: doc — адрес документа, setDoc — запись данных.
-import { doc, setDoc } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
+import { doc, getDoc, setDoc } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
 
 // ----------------------------- Константы -----------------------------
 const GRID_SIZE = 10;             // размер сетки: 10 на 10 клеток
@@ -696,16 +696,33 @@ class GameScene extends Phaser.Scene {
   }
 
   // Сохраняем рекорд игрока в Firestore: коллекция "leaderboard",
-  // документ — id игрока в Telegram (у каждого свой рекорд).
+  // документ — id игрока в Telegram (у каждого свой личный рекорд).
+  // Записываем только если новый результат лучше прошлого.
   async saveRecord() {
     const player = this.getPlayerInfo();
+    const reference = doc(db, 'leaderboard', player.id);
+    const newRecord = {
+      nick: player.nick,
+      wave: this.currentWave,
+      gold: this.gold,
+      savedAt: new Date().toISOString(),
+    };
+
     try {
-      await setDoc(doc(db, 'leaderboard', player.id), {
-        nick: player.nick,
-        wave: this.currentWave,
-        gold: this.gold,
-        savedAt: new Date().toISOString(),
-      });
+      const snapshot = await getDoc(reference);
+      const previous = snapshot.exists() ? snapshot.data() : null;
+
+      const isBetter =
+        !previous ||
+        newRecord.wave > (previous.wave || 0) ||
+        (newRecord.wave === (previous.wave || 0) && newRecord.gold > (previous.gold || 0));
+
+      if (!isBetter) {
+        console.log('Прошлый рекорд лучше — не перезаписываем.');
+        return;
+      }
+
+      await setDoc(reference, newRecord);
       console.log('Рекорд успешно сохранен в Firebase!');
     } catch (error) {
       console.error('Не удалось сохранить рекорд в Firebase:', error);

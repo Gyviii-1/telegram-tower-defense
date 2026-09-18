@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Telegram-бот игры Tower Defense: показывает таблицу лидеров из Firebase.
+"""Telegram-бот игры Tower Defense: таблица лидеров и личный рекорд из Firebase.
 
 Работает в двух режимах:
   * локально:  python bot.py              (токен берётся из config.py)
@@ -36,11 +36,14 @@ FIRESTORE_URL = (
     f"/databases/(default)/documents/leaderboard?key={API_KEY}"
 )
 
-LEADERBOARD_BUTTON = "🏆 Таблица лидеров"
+TOP_BUTTON = "🏆 Топ-10"
+ME_BUTTON = "📊 Мой рекорд"
 MENU_KEYBOARD = {
-    "keyboard": [[{"text": LEADERBOARD_BUTTON}]],
+    "keyboard": [[{"text": TOP_BUTTON}, {"text": ME_BUTTON}]],
     "resize_keyboard": True,
 }
+
+TOP_LIMIT = 10
 
 
 def api(method, **params):
@@ -59,17 +62,19 @@ def firestore_value(value):
     return None
 
 
-def load_leaderboard(limit=10):
-    """Читаем коллекцию leaderboard и возвращаем список словарей."""
+def load_leaderboard():
+    """Читаем всю коллекцию leaderboard и сортируем по рекорду (волна, затем золото)."""
     response = requests.get(FIRESTORE_URL, timeout=30)
     response.raise_for_status()
     documents = response.json().get("documents", [])
 
     records = []
     for document in documents:
+        doc_id = document["name"].rsplit("/", 1)[-1]  # id игрока — последняя часть пути
         fields = document.get("fields", {})
         records.append(
             {
+                "id": doc_id,
                 "nick": firestore_value(fields.get("nick")) or "Игрок",
                 "wave": int(firestore_value(fields.get("wave")) or 0),
                 "gold": int(firestore_value(fields.get("gold")) or 0),
@@ -77,28 +82,41 @@ def load_leaderboard(limit=10):
             }
         )
 
-    # Самые свежие записи — сверху.
-    records.sort(key=lambda record: record["savedAt"], reverse=True)
-    return records[:limit]
+    # Сначала больше волн, при равенстве — больше золота.
+    records.sort(key=lambda record: (record["wave"], record["gold"]), reverse=True)
+    return records
 
 
-def format_leaderboard(records):
-    """Собираем красивый текст для Telegram."""
+def format_top(records):
+    """Топ игроков с медалями."""
     if not records:
         return "📭 Пока нет рекордов. Сыграй в игру и проиграй — рекорд сохранится!"
 
-    lines = ["🏆 *Таблица лидеров*", ""]
+    top = records[:TOP_LIMIT]
+    lines = ["🏆 *Топ игроков*", ""]
     medals = ["🥇", "🥈", "🥉"]
-    for index, record in enumerate(records):
-        place = medals[index] if index < len(medals) else f"{index + 1}."
-        lines.append(f"{place} {record['nick']} — Волна {record['wave']}, {record['gold']} золота")
 
-        saved = record["savedAt"]
-        if saved:
-            saved = saved.replace("T", " ").replace("Z", "")[:19] + " UTC"
-            lines.append(f"     🕒 {saved}")
+    for index, record in enumerate(top):
+        place = medals[index] if index < len(medals) else f"{index + 1}."
+        lines.append(
+            f"{place} {record['nick']} — Волна {record['wave']}, {record['gold']} золота"
+        )
 
     return "\n".join(lines)
+
+
+def format_player(player_id, records):
+    """Личный рекорд игрока и его место в общем списке."""
+    for index, record in enumerate(records):
+        if record["id"] == player_id:
+            return (
+                "📊 *Твой рекорд*\n\n"
+                f"Волна: *{record['wave']}*\n"
+                f"Золото: *{record['gold']}*\n"
+                f"Место в топе: *{index + 1}* из {len(records)}"
+            )
+
+    return "🤷 Ты ещё не играл. Пройди игру до Game Over — рекорд сохранится автоматически."
 
 
 def send_message(chat_id, text):
@@ -118,20 +136,29 @@ def handle_update(update):
         return
 
     chat_id = message["chat"]["id"]
+    user_id = str(message.get("from", {}).get("id", ""))
     text = (message.get("text") or "").strip()
 
     if text in ("/start", "/help", "/menu"):
         send_message(
             chat_id,
             "👋 Привет! Это бот игры *Tower Defense*.\n\n"
-            "Нажми кнопку ниже, чтобы посмотреть рекорды.",
+            "Кнопки внизу:\n"
+            f"{TOP_BUTTON} — лучшие игроки\n"
+            f"{ME_BUTTON} — твой личный рекорд",
         )
-    elif text == "/leaderboard" or text == LEADERBOARD_BUTTON:
+    elif text in ("/top", "/leaderboard", TOP_BUTTON):
         try:
-            send_message(chat_id, format_leaderboard(load_leaderboard()))
+            send_message(chat_id, format_top(load_leaderboard()))
         except Exception as error:
             print("Ошибка чтения Firebase:", error)
             send_message(chat_id, "⚠️ Не удалось загрузить рекорды. Попробуй позже.")
+    elif text in ("/me", "/stats", ME_BUTTON):
+        try:
+            send_message(chat_id, format_player(user_id, load_leaderboard()))
+        except Exception as error:
+            print("Ошибка чтения Firebase:", error)
+            send_message(chat_id, "⚠️ Не удалось загрузить рекорд. Попробуй позже.")
 
 
 def main():
