@@ -34,8 +34,7 @@ const TOWER_TYPES = {
     fireRate: 1,
     damage: 1,
     accuracy: 1, // всегда попадает
-    size: 0.78,  // размер спрайта в клетках
-    radius: 0.30, // радиус для коллизий и кликов (совпадает с видимым кругом)
+    footprint: 0.7, // размер всей картинки в клетках (игра сама впишет в него спрайт)
     texture: 'tower',
     color: 0x2ecc71,
   },
@@ -46,8 +45,7 @@ const TOWER_TYPES = {
     fireRate: 4,
     damage: 1,
     accuracy: 0.7,   // 70% попаданий, 30% — разброс
-    size: 1.10,  // крупнее стрелка (круг занимает ~82% картинки)
-    radius: 0.45, // шире зона клика/коллизии
+    footprint: 1.0,  // крупнее стрелка
     texture: 'tower_minigun',
     color: 0x3498db,
   },
@@ -388,6 +386,14 @@ class GameScene extends Phaser.Scene {
     this.selectedTower = null;
     // Тип башни, который строим по клику (переключается панелью внизу).
     this.selectedTowerType = 'archer';
+
+    // Авто-замер картинок башен: где у них непрозрачная часть и её центр.
+    // Благодаря этому спрайт встаёт ровно и нужного размера без ручной подгонки.
+    this.towerVisuals = {};
+    for (const key in TOWER_TYPES) {
+      const visual = this.measureTexture(TOWER_TYPES[key].texture);
+      if (visual) this.towerVisuals[key] = visual;
+    }
 
     // Башни хранятся списком (свободная установка, без привязки к клеткам).
     this.towers = [];
@@ -1022,18 +1028,18 @@ class GameScene extends Phaser.Scene {
 
     for (const tower of this.towers) {
       const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+      const half = (this.cellSize * tower.config.footprint) / 2;
 
-      // Запасной вариант: если картинки нет — рисуем кружок цветом типа
-      // радиусом, совпадающим с зоной клика/коллизии.
+      // Запасной вариант: если картинки нет — рисуем кружок цветом типа.
       if (!this.textures.exists(tower.config.texture)) {
         g.fillStyle(tower.config.color, 1);
-        g.fillCircle(pos.x, pos.y, this.cellSize * tower.config.radius);
+        g.fillCircle(pos.x, pos.y, half);
       }
 
       // Уровень башни — белые точки под кружком (сколько точек, такой уровень).
       const pipRadius = this.cellSize * 0.045;
       const pipGap = this.cellSize * 0.14;
-      const pipY = pos.y + radius * 0.75;
+      const pipY = pos.y + half * 0.75;
       const startX = pos.x - ((tower.level - 1) * pipGap) / 2;
       g.fillStyle(0xffffff, 1);
       for (let i = 0; i < tower.level; i++) {
@@ -1050,14 +1056,69 @@ class GameScene extends Phaser.Scene {
 
     const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
     tower.sprite = this.add.image(pos.x, pos.y, textureKey).setDepth(1);
-    this.sizeTowerSprite(tower);
+    this.applyTowerVisual(tower.sprite, tower.typeKey);
   }
 
-  // Подгоняем размер картинки под тип башни (size в клетках).
-  sizeTowerSprite(tower) {
-    if (!tower.sprite) return;
-    const size = this.cellSize * tower.config.size;
-    tower.sprite.setDisplaySize(size, size);
+  // Вписываем картинку башни в её footprint и ставим точку опоры в центр
+  // непрозрачной части — тогда спрайт встаёт ровно, как бы он ни был нарисован.
+  applyTowerVisual(image, typeKey) {
+    const type = TOWER_TYPES[typeKey];
+    const visual = this.towerVisuals[typeKey];
+    const contentPx = this.cellSize * type.footprint; // нужный размер самого рисунка
+
+    if (visual) {
+      image.setOrigin(visual.originX, visual.originY);
+      const wholePx = contentPx / visual.fraction; // размер всей картинки вместе с полями
+      image.setDisplaySize(wholePx, wholePx);
+    } else {
+      image.setOrigin(0.5, 0.5);
+      image.setDisplaySize(contentPx, contentPx);
+    }
+  }
+
+  // Измеряем картинку: какую долю занимает непрозрачная часть и где её центр.
+  measureTexture(key) {
+    if (!this.textures.exists(key)) return null;
+
+    const source = this.textures.get(key).getSourceImage();
+    const width = source.width;
+    const height = source.height;
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+
+    const context = canvas.getContext('2d');
+    context.drawImage(source, 0, 0);
+    const pixels = context.getImageData(0, 0, width, height).data;
+
+    let minX = width;
+    let minY = height;
+    let maxX = -1;
+    let maxY = -1;
+
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (pixels[(y * width + x) * 4 + 3] > 10) {
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+        }
+      }
+    }
+
+    if (maxX < 0) return null;
+
+    const contentWidth = maxX - minX + 1;
+    const contentHeight = maxY - minY + 1;
+
+    return {
+      // доля картинки, которую занимает рисунок (по большей стороне)
+      fraction: Math.max(contentWidth, contentHeight) / width,
+      // центр рисунка в долях 0..1 — сюда ставим точку опоры спрайта
+      originX: (minX + maxX + 1) / 2 / width,
+      originY: (minY + maxY + 1) / 2 / height,
+    };
   }
 
   // Переставляем все спрайты башен (при изменении размера экрана).
@@ -1066,7 +1127,7 @@ class GameScene extends Phaser.Scene {
       if (!tower.sprite) continue;
       const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
       tower.sprite.setPosition(pos.x, pos.y);
-      this.sizeTowerSprite(tower);
+      this.applyTowerVisual(tower.sprite, tower.typeKey);
     }
   }
 
@@ -1177,7 +1238,7 @@ class GameScene extends Phaser.Scene {
   // нельзя поставить новую — клик уходил бы в перетаскивание.
   towerAt(gx, gy) {
     for (const tower of this.towers) {
-      if (Math.hypot(tower.gx - gx, tower.gy - gy) <= tower.config.radius) return tower;
+      if (Math.hypot(tower.gx - gx, tower.gy - gy) <= tower.config.footprint / 2) return tower;
     }
     return null;
   }
@@ -1187,7 +1248,7 @@ class GameScene extends Phaser.Scene {
   isFreeSpot(gx, gy, type, ignoreTower = null) {
     // Отступ от края поля и от дороги берём по всему спрайту (size),
     // иначе крупная башня картинкой «заезжает» на дорогу.
-    const footprint = type.size / 2;
+    const footprint = type.footprint / 2;
 
     // Границы игрового поля.
     if (gx - footprint < 0 || gx + footprint > GRID_SIZE) return false;
@@ -1204,7 +1265,7 @@ class GameScene extends Phaser.Scene {
     // ставить почти вплотную (с небольшим запасом на точность пальца).
     for (const tower of this.towers) {
       if (tower === ignoreTower) continue;
-      const minDistance = (type.radius + tower.config.radius) * 0.9;
+      const minDistance = ((type.footprint + tower.config.footprint) / 2) * 0.9;
       if (Math.hypot(tower.gx - gx, tower.gy - gy) < minDistance) return false;
     }
 
@@ -1267,7 +1328,7 @@ class GameScene extends Phaser.Scene {
 
     const pos = { x: this.offsetX + gx * this.cellSize, y: this.offsetY + gy * this.cellSize };
     this.ghost.setTexture(type.texture);
-    this.ghost.setDisplaySize(this.cellSize * type.size, this.cellSize * type.size);
+    this.applyTowerVisual(this.ghost, this.selectedTowerType);
     this.ghost.setPosition(pos.x, pos.y);
 
     const canPlace = this.isFreeSpot(gx, gy, type) && this.gold >= type.cost;
