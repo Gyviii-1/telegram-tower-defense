@@ -46,7 +46,7 @@ const TOWER_TYPES = {
     fireRate: 4,
     damage: 1,
     accuracy: 0.7,   // 70% попаданий, 30% — разброс
-    size: 1.44,  // крупнее стрелка
+    size: 1.10,  // крупнее стрелка (круг занимает ~82% картинки)
     radius: 0.45, // шире зона клика/коллизии
     texture: 'tower_minigun',
     color: 0x3498db,
@@ -1163,32 +1163,37 @@ class GameScene extends Phaser.Scene {
     };
   }
 
-  // Находим башню под точкой (по расстоянию до её центра и её радиусу).
+  // Находим башню под точкой. Берём весь спрайт (size/2), чтобы
+  // её можно было «схватить» и за ствол, а не только за круг.
   towerAt(gx, gy) {
     for (const tower of this.towers) {
-      if (Math.hypot(tower.gx - gx, tower.gy - gy) <= tower.config.radius) return tower;
+      if (Math.hypot(tower.gx - gx, tower.gy - gy) <= tower.config.size / 2) return tower;
     }
     return null;
   }
 
-  // Можно ли поставить башню радиуса radius в точку:
+  // Можно ли поставить башню типа type в точку:
   // в пределах поля, не на дороге и не пересекаясь с другими башнями.
-  isFreeSpot(gx, gy, radius, ignoreTower = null) {
-    // Границы игрового поля.
-    if (gx - radius < 0 || gx + radius > GRID_SIZE) return false;
-    if (gy - radius < 0 || gy + radius > GRID_SIZE) return false;
+  isFreeSpot(gx, gy, type, ignoreTower = null) {
+    // Отступ от края поля и от дороги берём по всему спрайту (size),
+    // иначе крупная башня картинкой «заезжает» на дорогу.
+    const footprint = type.size / 2;
 
-    // Дорога: проверяем, пересекается ли круг башни с клетками дороги.
+    // Границы игрового поля.
+    if (gx - footprint < 0 || gx + footprint > GRID_SIZE) return false;
+    if (gy - footprint < 0 || gy + footprint > GRID_SIZE) return false;
+
+    // Дорога: спрайт не должен пересекаться с клетками дороги.
     for (const cell of this.pathCells) {
       const nearestX = Phaser.Math.Clamp(gx, cell.col, cell.col + 1);
       const nearestY = Phaser.Math.Clamp(gy, cell.row, cell.row + 1);
-      if (Math.hypot(gx - nearestX, gy - nearestY) < radius) return false;
+      if (Math.hypot(gx - nearestX, gy - nearestY) < footprint) return false;
     }
 
-    // Другие башни рядом (соприкосновение кругов).
+    // Другие башни: не ближе суммы их видимых радиусов.
     for (const tower of this.towers) {
       if (tower === ignoreTower) continue;
-      if (Math.hypot(tower.gx - gx, tower.gy - gy) < radius + tower.config.radius) return false;
+      if (Math.hypot(tower.gx - gx, tower.gy - gy) < type.radius + tower.config.radius) return false;
     }
 
     return true;
@@ -1216,7 +1221,7 @@ class GameScene extends Phaser.Scene {
     const type = TOWER_TYPES[this.selectedTowerType];
 
     // Занято дорогой или другой башней.
-    if (!this.isFreeSpot(gx, gy, type.radius)) {
+    if (!this.isFreeSpot(gx, gy, type)) {
       this.showMessage('Здесь нельзя строить');
       return;
     }
@@ -1287,7 +1292,7 @@ class GameScene extends Phaser.Scene {
     }
 
     // Новое место занято — возвращаем башню на прежнее.
-    if (!this.isFreeSpot(tower.gx, tower.gy, tower.config.radius, tower)) {
+    if (!this.isFreeSpot(tower.gx, tower.gy, tower.config, tower)) {
       tower.gx = this.dragStartX;
       tower.gy = this.dragStartY;
       this.showMessage('Здесь нельзя поставить');
