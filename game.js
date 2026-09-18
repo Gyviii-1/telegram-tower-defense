@@ -88,6 +88,7 @@ class Enemy extends Phaser.GameObjects.Rectangle {
     this.isDead = false;        // мёртв/исчезает — не двигается и не цель для башен
 
     scene.add.existing(this);   // добавляем объект в сцену
+    this.setDepth(3);           // враги поверх башен
   }
 
   // Движение по маршруту. delta — мс, геометрия сетки передаётся из сцены,
@@ -177,6 +178,7 @@ class Projectile extends Phaser.GameObjects.Arc {
     this.target = target; // враг, в которого летим
     this.damage = damage; // урон башни (растёт с уровнем)
     scene.add.existing(this);
+    this.setDepth(4); // снаряды поверх всего игрового поля
   }
 
   // Летим к цели; при достижении наносим урон и исчезаем.
@@ -218,6 +220,7 @@ class Tower {
     this.damage = TOWER_DAMAGE;      // урон за выстрел
     this.cooldown = 0;               // время до следующего выстрела, сек
     this.totalSpent = TOWER_COST;    // сколько золота вложено (для продажи)
+    this.sprite = null;              // картинка башни (создаётся сценой)
   }
 
   // Цена следующего улучшения (растёт с уровнем).
@@ -299,6 +302,11 @@ class GameScene extends Phaser.Scene {
     super('GameScene');
   }
 
+  // Предзагрузка изображений (вызывается Phaser автоматически до create).
+  preload() {
+    this.load.image('tower', 'assets/tower.png');
+  }
+
   create() {
     // Разворачиваем мини-апп на весь экран Telegram и определяем игрока.
     this.initTelegram();
@@ -330,8 +338,10 @@ class GameScene extends Phaser.Scene {
 
     // Отдельная графика для клеток сетки и для башен —
     // так их можно перерисовывать независимо.
-    this.gridGraphics = this.add.graphics();
-    this.towersGraphics = this.add.graphics();
+    // Слои по глубине: сетка (0) → спрайты башен (1) → точки уровня (2) →
+    // враги (3) → снаряды (4) → UI (90+).
+    this.gridGraphics = this.add.graphics().setDepth(0);
+    this.towersGraphics = this.add.graphics().setDepth(2);
 
     // Геометрия сетки (пересчитывается в layout()).
     this.cellSize = 0; // размер одной клетки в пикселях
@@ -633,6 +643,7 @@ class GameScene extends Phaser.Scene {
 
     this.gold += tower.getSellValue();
     this.towers[tower.row][tower.col] = null;
+    this.destroyTowerSprite(tower);
     this.drawTowers();
     this.closeTowerMenu();
     this.updateUI();
@@ -778,6 +789,7 @@ class GameScene extends Phaser.Scene {
 
     this.drawGrid();
     this.drawTowers();
+    this.layoutTowerSprites();
     this.layoutUI(width, height);
   }
 
@@ -839,6 +851,7 @@ class GameScene extends Phaser.Scene {
     g.clear();
 
     const radius = this.cellSize * 0.35; // радиус кружка относительно клетки
+    const hasTexture = this.textures.exists('tower'); // загрузилась ли картинка
 
     for (let row = 0; row < GRID_SIZE; row++) {
       for (let col = 0; col < GRID_SIZE; col++) {
@@ -848,8 +861,11 @@ class GameScene extends Phaser.Scene {
         // Центр клетки.
         const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
 
-        g.fillStyle(TOWER_COLOR, 1);
-        g.fillCircle(pos.x, pos.y, radius);
+        // Запасной вариант: если картинки нет — рисуем кружок (как раньше).
+        if (!hasTexture) {
+          g.fillStyle(TOWER_COLOR, 1);
+          g.fillCircle(pos.x, pos.y, radius);
+        }
 
         // Уровень башни — белые точки под кружком (сколько точек, такой уровень).
         const pipRadius = this.cellSize * 0.045;
@@ -862,6 +878,42 @@ class GameScene extends Phaser.Scene {
         }
       }
     }
+  }
+
+  // ------------------------- Спрайты башен -------------------------
+  // Создаём картинку башни (если текстура загрузилась).
+  createTowerSprite(tower) {
+    if (!this.textures.exists('tower')) return;
+
+    const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+    tower.sprite = this.add.image(pos.x, pos.y, 'tower').setDepth(1);
+    this.sizeTowerSprite(tower);
+  }
+
+  // Подгоняем размер картинки под клетку.
+  sizeTowerSprite(tower) {
+    if (!tower.sprite) return;
+    const size = this.cellSize * 0.8;
+    tower.sprite.setDisplaySize(size, size);
+  }
+
+  // Переставляем все спрайты башен (при изменении размера экрана).
+  layoutTowerSprites() {
+    for (const row of this.towers) {
+      for (const tower of row) {
+        if (!tower || !tower.sprite) continue;
+        const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+        tower.sprite.setPosition(pos.x, pos.y);
+        this.sizeTowerSprite(tower);
+      }
+    }
+  }
+
+  // Удаляем картинку башни (при продаже).
+  destroyTowerSprite(tower) {
+    if (!tower.sprite) return;
+    tower.sprite.destroy();
+    tower.sprite = null;
   }
 
   // Проверка: является ли клетка дорогой.
@@ -985,8 +1037,10 @@ class GameScene extends Phaser.Scene {
     }
 
     this.gold -= TOWER_COST;
-    this.towers[row][col] = new Tower(this, row, col);
-    this.drawTowers(); // перерисовываем только башни
+    const tower = new Tower(this, row, col);
+    this.towers[row][col] = tower;
+    this.createTowerSprite(tower);
+    this.drawTowers(); // перерисовываем индикаторы уровня
     this.updateUI();
   }
 
