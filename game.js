@@ -21,6 +21,8 @@ const GRID_LINE_COLOR = 0x0f3460; // цвет линий сетки
 const TOWER_COLOR = 0x2ecc71;     // акцентный цвет интерфейса башен
 const TOWER_MAX_LEVEL = 5;        // максимальный уровень башни
 const TOWER_SELL_RATIO = 0.7;     // возврат золота при продаже (70% вложенного)
+const TOWER_RADIUS = 0.42;        // радиус башни в клетках (для установки и кликов)
+const MIN_TOWER_DISTANCE = 0.85;  // минимальное расстояние между центрами башен
 
 // Типы башен. cost — цена постройки, range — радиус в клетках,
 // fireRate — выстрелов в секунду, damage — урон, texture — картинка.
@@ -257,12 +259,12 @@ class Projectile extends Phaser.GameObjects.Arc {
 // ------------------------------ Башня ------------------------------
 // Башня хранит своё место на сетке, радиус атаки и перезарядку.
 class Tower {
-  constructor(scene, row, col, typeKey = 'archer') {
+  constructor(scene, gx, gy, typeKey = 'archer') {
     const type = TOWER_TYPES[typeKey] || TOWER_TYPES.archer;
 
     this.scene = scene;
-    this.row = row;
-    this.col = col;
+    this.gx = gx; // центр башни в клетках (может быть дробным)
+    this.gy = gy;
     this.typeKey = typeKey;          // ключ типа ("archer", "minigun", ...)
     this.config = type;              // настройки типа
     this.level = 1;                  // уровень башни
@@ -303,8 +305,8 @@ class Tower {
   // Центр башни в пикселях с учётом текущей геометрии сетки.
   getPosition(cellSize, offsetX, offsetY) {
     return {
-      x: offsetX + (this.col + 0.5) * cellSize,
-      y: offsetY + (this.row + 0.5) * cellSize,
+      x: offsetX + this.gx * cellSize,
+      y: offsetY + this.gy * cellSize,
     };
   }
 
@@ -383,8 +385,12 @@ class GameScene extends Phaser.Scene {
     // Тип башни, который строим по клику (переключается панелью внизу).
     this.selectedTowerType = 'archer';
 
-    // Карта башен: towers[row][col] — объект Tower или null.
-    this.towers = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(null));
+    // Башни хранятся списком (свободная установка, без привязки к клеткам).
+    this.towers = [];
+
+    // Состояние перетаскивания башни.
+    this.dragTower = null;
+    this.dragMoved = false;
 
     // Строим маршрут: список клеток + быстрый доступ "клетка это дорога?".
     this.buildPath();
@@ -416,8 +422,11 @@ class GameScene extends Phaser.Scene {
     this.scale.on('resize', this.layout, this);
     this.updateUI();
 
-    // Клик/тап по сцене — строим башню в нужной клетке.
+    // Управление указателем: клик — постройка/меню, перетаскивание — перенос башни.
     this.input.on('pointerdown', this.handlePointerDown, this);
+    this.input.on('pointermove', this.handlePointerMove, this);
+    this.input.on('pointerup', this.handlePointerUp, this);
+    this.input.on('pointerupoutside', this.handlePointerUp, this);
 
     // Волны запускаются вручную кнопкой "[ СТАРТ ВОЛНЫ ]".
   }
@@ -710,7 +719,8 @@ class GameScene extends Phaser.Scene {
     if (!tower) return;
 
     this.gold += tower.getSellValue();
-    this.towers[tower.row][tower.col] = null;
+    const index = this.towers.indexOf(tower);
+    if (index !== -1) this.towers.splice(index, 1);
     this.destroyTowerSprite(tower);
     this.drawTowers();
     this.closeTowerMenu();
@@ -999,29 +1009,23 @@ class GameScene extends Phaser.Scene {
 
     const radius = this.cellSize * 0.35; // радиус кружка относительно клетки
 
-    for (let row = 0; row < GRID_SIZE; row++) {
-      for (let col = 0; col < GRID_SIZE; col++) {
-        const tower = this.towers[row][col];
-        if (!tower) continue;
+    for (const tower of this.towers) {
+      const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
 
-        // Центр клетки.
-        const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+      // Запасной вариант: если картинки нет — рисуем кружок цветом типа.
+      if (!this.textures.exists(tower.config.texture)) {
+        g.fillStyle(tower.config.color, 1);
+        g.fillCircle(pos.x, pos.y, radius);
+      }
 
-        // Запасной вариант: если картинки нет — рисуем кружок цветом типа.
-        if (!this.textures.exists(tower.config.texture)) {
-          g.fillStyle(tower.config.color, 1);
-          g.fillCircle(pos.x, pos.y, radius);
-        }
-
-        // Уровень башни — белые точки под кружком (сколько точек, такой уровень).
-        const pipRadius = this.cellSize * 0.045;
-        const pipGap = this.cellSize * 0.14;
-        const pipY = pos.y + radius * 0.75;
-        const startX = pos.x - ((tower.level - 1) * pipGap) / 2;
-        g.fillStyle(0xffffff, 1);
-        for (let i = 0; i < tower.level; i++) {
-          g.fillCircle(startX + i * pipGap, pipY, pipRadius);
-        }
+      // Уровень башни — белые точки под кружком (сколько точек, такой уровень).
+      const pipRadius = this.cellSize * 0.045;
+      const pipGap = this.cellSize * 0.14;
+      const pipY = pos.y + radius * 0.75;
+      const startX = pos.x - ((tower.level - 1) * pipGap) / 2;
+      g.fillStyle(0xffffff, 1);
+      for (let i = 0; i < tower.level; i++) {
+        g.fillCircle(startX + i * pipGap, pipY, pipRadius);
       }
     }
   }
@@ -1046,13 +1050,11 @@ class GameScene extends Phaser.Scene {
 
   // Переставляем все спрайты башен (при изменении размера экрана).
   layoutTowerSprites() {
-    for (const row of this.towers) {
-      for (const tower of row) {
-        if (!tower || !tower.sprite) continue;
-        const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
-        tower.sprite.setPosition(pos.x, pos.y);
-        this.sizeTowerSprite(tower);
-      }
+    for (const tower of this.towers) {
+      if (!tower.sprite) continue;
+      const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+      tower.sprite.setPosition(pos.x, pos.y);
+      this.sizeTowerSprite(tower);
     }
   }
 
@@ -1150,33 +1152,69 @@ class GameScene extends Phaser.Scene {
     this.showMessage(`Волна ${this.currentWave} зачищена! +${WAVE_CLEAR_BONUS} золота`);
   }
 
-  // Обработка клика: переводим координаты указателя в индексы клетки.
+  // Переводим координаты указателя в «клеточные» единицы (центр башни).
+  pointerToGrid(pointer) {
+    return {
+      gx: (pointer.x - this.offsetX) / this.cellSize,
+      gy: (pointer.y - this.offsetY) / this.cellSize,
+    };
+  }
+
+  // Находим башню под точкой (по расстоянию до её центра).
+  towerAt(gx, gy) {
+    for (const tower of this.towers) {
+      if (Math.hypot(tower.gx - gx, tower.gy - gy) <= TOWER_RADIUS) return tower;
+    }
+    return null;
+  }
+
+  // Можно ли поставить башню в точку: в пределах поля, не на дороге и не поверх другой.
+  isFreeSpot(gx, gy, ignoreTower = null) {
+    // Границы игрового поля.
+    if (gx - TOWER_RADIUS < 0 || gx + TOWER_RADIUS > GRID_SIZE) return false;
+    if (gy - TOWER_RADIUS < 0 || gy + TOWER_RADIUS > GRID_SIZE) return false;
+
+    // Дорога: проверяем, пересекается ли круг башни с клетками дороги.
+    for (const cell of this.pathCells) {
+      const nearestX = Phaser.Math.Clamp(gx, cell.col, cell.col + 1);
+      const nearestY = Phaser.Math.Clamp(gy, cell.row, cell.row + 1);
+      if (Math.hypot(gx - nearestX, gy - nearestY) < TOWER_RADIUS) return false;
+    }
+
+    // Другие башни рядом.
+    for (const tower of this.towers) {
+      if (tower === ignoreTower) continue;
+      if (Math.hypot(tower.gx - gx, tower.gy - gy) < MIN_TOWER_DISTANCE) return false;
+    }
+
+    return true;
+  }
+
+  // Обработка нажатия: клик по башне — перетаскивание, по пустому месту — постройка.
   handlePointerDown(pointer) {
     if (this.isGameOver) return;
 
-    const col = Math.floor((pointer.x - this.offsetX) / this.cellSize);
-    const row = Math.floor((pointer.y - this.offsetY) / this.cellSize);
+    const { gx, gy } = this.pointerToGrid(pointer);
 
-    // Клик вне сетки — просто закрываем меню башни.
-    if (row < 0 || row >= GRID_SIZE || col < 0 || col >= GRID_SIZE) {
-      this.closeTowerMenu();
+    // Нажали на башню — начинаем перетаскивание.
+    const existing = this.towerAt(gx, gy);
+    if (existing) {
+      this.startDragging(existing, gx, gy);
       return;
     }
 
-    // Клик по башне — открываем меню улучшения/продажи.
-    const existingTower = this.towers[row][col];
-    if (existingTower) {
-      this.openTowerMenu(existingTower);
-      return;
-    }
-
-    // Клик по пустой клетке — закрываем меню.
+    // Клик по пустому месту — закрываем меню.
     this.closeTowerMenu();
 
-    // На дороге строить нельзя.
-    if (this.isRoad(row, col)) return;
+    // Вне пределов поля — ничего не делаем.
+    if (gx < 0 || gx > GRID_SIZE || gy < 0 || gy > GRID_SIZE) return;
 
-    // Тип башни, выбранный в панели внизу.
+    // Занято дорогой или другой башней.
+    if (!this.isFreeSpot(gx, gy)) {
+      this.showMessage('Здесь нельзя строить');
+      return;
+    }
+
     const type = TOWER_TYPES[this.selectedTowerType];
 
     // Проверяем золото: не хватает — предупреждаем и не строим.
@@ -1187,11 +1225,77 @@ class GameScene extends Phaser.Scene {
     }
 
     this.gold -= type.cost;
-    const tower = new Tower(this, row, col, this.selectedTowerType);
-    this.towers[row][col] = tower;
+    const tower = new Tower(this, gx, gy, this.selectedTowerType);
+    this.towers.push(tower);
     this.createTowerSprite(tower);
     this.drawTowers(); // перерисовываем индикаторы уровня
     this.updateUI();
+  }
+
+  // Начинаем перетаскивание башни (запоминаем, за какую точку «схватили»).
+  startDragging(tower, gx, gy) {
+    this.dragTower = tower;
+    this.dragMoved = false;
+    this.dragOffsetX = tower.gx - gx;
+    this.dragOffsetY = tower.gy - gy;
+    this.dragStartX = tower.gx;
+    this.dragStartY = tower.gy;
+    this.closeTowerMenu();
+  }
+
+  // Перетаскивание: двигаем башню за пальцем/курсором.
+  handlePointerMove(pointer) {
+    if (!this.dragTower || this.isGameOver) return;
+
+    const { gx, gy } = this.pointerToGrid(pointer);
+    const tower = this.dragTower;
+    const newGx = gx + this.dragOffsetX;
+    const newGy = gy + this.dragOffsetY;
+
+    // Небольшой порог, чтобы лёгкое дрожание пальца не считалось переносом.
+    if (!this.dragMoved) {
+      const movedPx = Math.hypot(newGx - this.dragStartX, newGy - this.dragStartY) * this.cellSize;
+      if (movedPx < 8) return;
+      this.dragMoved = true;
+    }
+
+    tower.gx = newGx;
+    tower.gy = newGy;
+
+    if (tower.sprite) {
+      const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+      tower.sprite.setPosition(pos.x, pos.y);
+    }
+    this.drawTowers();
+  }
+
+  // Отпускание: клик без движения — меню, иначе фиксируем (или откатываем) позицию.
+  handlePointerUp() {
+    if (!this.dragTower) return;
+
+    const tower = this.dragTower;
+    this.dragTower = null;
+
+    // Если движения не было — это обычный клик, открываем меню башни.
+    if (!this.dragMoved) {
+      this.openTowerMenu(tower);
+      return;
+    }
+
+    // Новое место занято — возвращаем башню на прежнее.
+    if (!this.isFreeSpot(tower.gx, tower.gy, tower)) {
+      tower.gx = this.dragStartX;
+      tower.gy = this.dragStartY;
+      this.showMessage('Здесь нельзя поставить');
+    }
+
+    if (tower.sprite) {
+      const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+      tower.sprite.setPosition(pos.x, pos.y);
+    }
+    this.drawTowers();
+
+    if (this.selectedTower === tower) this.positionTowerMenu();
   }
 
   // Игровой цикл: двигаем врагов, работаем башнями, летим снарядами.
@@ -1206,12 +1310,8 @@ class GameScene extends Phaser.Scene {
     }
 
     // Башни: перезарядка, поиск цели, выстрел.
-    for (const row of this.towers) {
-      for (const tower of row) {
-        if (tower) {
-          tower.update(delta, this.cellSize, this.offsetX, this.offsetY, this.enemies);
-        }
-      }
+    for (const tower of this.towers) {
+      tower.update(delta, this.cellSize, this.offsetX, this.offsetY, this.enemies);
     }
 
     // Снаряды.
