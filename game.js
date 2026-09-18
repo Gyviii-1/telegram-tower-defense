@@ -1163,11 +1163,12 @@ class GameScene extends Phaser.Scene {
     };
   }
 
-  // Находим башню под точкой. Берём весь спрайт (size/2), чтобы
-  // её можно было «схватить» и за ствол, а не только за круг.
+  // Находим башню под точкой по её кругу (radius).
+  // Зону захвата НЕ расширяем до всего спрайта, иначе рядом с башней
+  // нельзя поставить новую — клик уходил бы в перетаскивание.
   towerAt(gx, gy) {
     for (const tower of this.towers) {
-      if (Math.hypot(tower.gx - gx, tower.gy - gy) <= tower.config.size / 2) return tower;
+      if (Math.hypot(tower.gx - gx, tower.gy - gy) <= tower.config.radius) return tower;
     }
     return null;
   }
