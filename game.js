@@ -18,14 +18,32 @@ const CELL_COLOR = 0x16213e;      // заливка обычной (свобод
 const ROAD_COLOR = 0xd4a017;      // заливка клетки дороги (жёлто-песочный)
 const GRID_LINE_COLOR = 0x0f3460; // цвет линий сетки
 
-const TOWER_COLOR = 0x2ecc71;     // цвет башни (зелёный кружок)
-const TOWER_RANGE = 2.5;          // базовый радиус атаки башни в клетках
-const TOWER_FIRE_RATE = 1;        // базовых выстрелов в секунду
-const TOWER_DAMAGE = 1;           // базовый урон за выстрел
-const TOWER_COST = 25;            // стоимость постройки башни
+const TOWER_COLOR = 0x2ecc71;     // акцентный цвет интерфейса башен
 const TOWER_MAX_LEVEL = 5;        // максимальный уровень башни
-const TOWER_UPGRADE_COST = 20;    // базовая цена улучшения (умножается на уровень)
 const TOWER_SELL_RATIO = 0.7;     // возврат золота при продаже (70% вложенного)
+
+// Типы башен. cost — цена постройки, range — радиус в клетках,
+// fireRate — выстрелов в секунду, damage — урон, texture — картинка.
+const TOWER_TYPES = {
+  archer: {
+    name: 'Стрелок',
+    cost: 25,
+    range: 2.5,
+    fireRate: 1,
+    damage: 1,
+    texture: 'tower',
+    color: 0x2ecc71,
+  },
+  minigun: {
+    name: 'Миниган',
+    cost: 40,
+    range: 2.0,
+    fireRate: 4,
+    damage: 1,
+    texture: 'tower_minigun',
+    color: 0x3498db,
+  },
+};
 
 const ENEMY_HIT_COLOR = 0xffffff; // вспышка врага при попадании
 const ENEMY_HP = 3;               // базовое здоровье врага по умолчанию
@@ -210,22 +228,26 @@ class Projectile extends Phaser.GameObjects.Arc {
 // ------------------------------ Башня ------------------------------
 // Башня хранит своё место на сетке, радиус атаки и перезарядку.
 class Tower {
-  constructor(scene, row, col) {
+  constructor(scene, row, col, typeKey = 'archer') {
+    const type = TOWER_TYPES[typeKey] || TOWER_TYPES.archer;
+
     this.scene = scene;
     this.row = row;
     this.col = col;
+    this.typeKey = typeKey;          // ключ типа ("archer", "minigun", ...)
+    this.config = type;              // настройки типа
     this.level = 1;                  // уровень башни
-    this.range = TOWER_RANGE;        // радиус атаки, клеток
-    this.fireRate = TOWER_FIRE_RATE; // выстрелов в секунду
-    this.damage = TOWER_DAMAGE;      // урон за выстрел
+    this.range = type.range;         // радиус атаки, клеток
+    this.fireRate = type.fireRate;   // выстрелов в секунду
+    this.damage = type.damage;       // урон за выстрел
     this.cooldown = 0;               // время до следующего выстрела, сек
-    this.totalSpent = TOWER_COST;    // сколько золота вложено (для продажи)
+    this.totalSpent = type.cost;     // сколько золота вложено (для продажи)
     this.sprite = null;              // картинка башни (создаётся сценой)
   }
 
-  // Цена следующего улучшения (растёт с уровнем).
+  // Цена следующего улучшения (зависит от типа и уровня).
   getUpgradeCost() {
-    return TOWER_UPGRADE_COST * this.level;
+    return Math.round(this.config.cost * 0.8) * this.level;
   }
 
   // Сколько золота вернётся при продаже.
@@ -305,6 +327,7 @@ class GameScene extends Phaser.Scene {
   // Предзагрузка изображений (вызывается Phaser автоматически до create).
   preload() {
     this.load.image('tower', 'assets/tower.png');
+    this.load.image('tower_minigun', 'assets/tower_minigun.png');
   }
 
   create() {
@@ -325,6 +348,8 @@ class GameScene extends Phaser.Scene {
 
     // Выбранная башня (для меню улучшения/продажи).
     this.selectedTower = null;
+    // Тип башни, который строим по клику (переключается панелью внизу).
+    this.selectedTowerType = 'archer';
 
     // Карта башен: towers[row][col] — объект Tower или null.
     this.towers = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(null));
@@ -517,6 +542,9 @@ class GameScene extends Phaser.Scene {
       if (event && event.stopPropagation) event.stopPropagation();
       this.sellSelectedTower();
     });
+
+    // Панель выбора башни для постройки (внизу экрана).
+    this.createBuildMenu();
   }
 
   // Обновляем текст панели при изменении волны/жизней/золота.
@@ -547,6 +575,7 @@ class GameScene extends Phaser.Scene {
     this.startButton.setVisible(false); // убираем кнопку старта волны
     this.restartButton.setVisible(true); // показываем кнопку перезапуска
     this.closeTowerMenu(); // прячем меню башни, если оно было открыто
+    this.buildMenu.setVisible(false); // прячем панель постройки
 
     // Небольшой эффект появления.
     this.gameOverText.setScale(0.5);
@@ -584,7 +613,7 @@ class GameScene extends Phaser.Scene {
     const tower = this.selectedTower;
     if (!tower) return;
 
-    this.towerMenuTitle.setText(`Башня · ур. ${tower.level}`);
+    this.towerMenuTitle.setText(`${tower.config.name} · ур. ${tower.level}`);
 
     if (tower.canUpgrade()) {
       this.towerMenuUpgrade.setText(`Улучшить (${tower.getUpgradeCost()})`).setColor('#2ecc71');
@@ -647,6 +676,81 @@ class GameScene extends Phaser.Scene {
     this.drawTowers();
     this.closeTowerMenu();
     this.updateUI();
+  }
+
+  // ------------------------- Панель постройки -------------------------
+  // Создаём кнопки выбора типа башни (внизу экрана).
+  createBuildMenu() {
+    this.buildMenu = this.add.container(0, 0).setDepth(100);
+    this.buildButtons = {};
+
+    const keys = Object.keys(TOWER_TYPES);
+    const buttonWidth = 150;
+    const gap = 12;
+
+    keys.forEach((key, index) => {
+      const type = TOWER_TYPES[key];
+      const button = this.add.container(index * (buttonWidth + gap), 0);
+
+      const bg = this.add
+        .rectangle(0, 0, buttonWidth, 90, 0x000000, 0.85)
+        .setStrokeStyle(2, 0xffffff, 0.4)
+        .setInteractive({ useHandCursor: true });
+
+      bg.on('pointerdown', (pointer, localX, localY, event) => {
+        if (event && event.stopPropagation) event.stopPropagation();
+        this.selectTowerType(key);
+      });
+
+      const icon = this.add.image(0, -14, type.texture).setDisplaySize(40, 40);
+      const label = this.add
+        .text(0, 26, `${type.name} · ${type.cost}`, {
+          fontFamily: 'Arial, sans-serif',
+          fontSize: '15px',
+          color: '#ffffff',
+        })
+        .setOrigin(0.5);
+
+      button.add([bg, icon, label]);
+      this.buildMenu.add(button);
+
+      this.buildButtons[key] = { container: button, bg: bg, type: type };
+    });
+
+    this.refreshBuildMenu();
+  }
+
+  // Выбрать тип башни для постройки.
+  selectTowerType(key) {
+    this.selectedTowerType = key;
+    this.refreshBuildMenu();
+  }
+
+  // Подсветить выбранную кнопку панели.
+  refreshBuildMenu() {
+    if (!this.buildButtons) return;
+    for (const key in this.buildButtons) {
+      const selected = key === this.selectedTowerType;
+      this.buildButtons[key].bg.setStrokeStyle(
+        3,
+        selected ? TOWER_COLOR : 0xffffff,
+        selected ? 1 : 0.4
+      );
+    }
+  }
+
+  // Расположить кнопки панели постройки внизу экрана.
+  layoutBuildMenu(width, height) {
+    const keys = Object.keys(this.buildButtons);
+    const buttonWidth = 150;
+    const gap = 12;
+    const totalWidth = keys.length * buttonWidth + (keys.length - 1) * gap;
+    const startX = width / 2 - totalWidth / 2 + buttonWidth / 2;
+    const y = height - 60;
+
+    keys.forEach((key, index) => {
+      this.buildButtons[key].container.setPosition(startX + index * (buttonWidth + gap), y);
+    });
   }
 
   // ------------------------- Игровые события -------------------------
@@ -822,6 +926,10 @@ class GameScene extends Phaser.Scene {
 
     // Если меню башни открыто — пересчитываем позицию под новый размер.
     if (this.selectedTower) this.positionTowerMenu();
+
+    // Панель постройки башен.
+    this.layoutBuildMenu(width, height);
+    this.buildMenu.setVisible(!this.isGameOver);
   }
 
   // Рисуем клетки сетки. Дорогу подсвечиваем другим цветом.
@@ -851,7 +959,6 @@ class GameScene extends Phaser.Scene {
     g.clear();
 
     const radius = this.cellSize * 0.35; // радиус кружка относительно клетки
-    const hasTexture = this.textures.exists('tower'); // загрузилась ли картинка
 
     for (let row = 0; row < GRID_SIZE; row++) {
       for (let col = 0; col < GRID_SIZE; col++) {
@@ -861,9 +968,9 @@ class GameScene extends Phaser.Scene {
         // Центр клетки.
         const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
 
-        // Запасной вариант: если картинки нет — рисуем кружок (как раньше).
-        if (!hasTexture) {
-          g.fillStyle(TOWER_COLOR, 1);
+        // Запасной вариант: если картинки нет — рисуем кружок цветом типа.
+        if (!this.textures.exists(tower.config.texture)) {
+          g.fillStyle(tower.config.color, 1);
           g.fillCircle(pos.x, pos.y, radius);
         }
 
@@ -883,10 +990,11 @@ class GameScene extends Phaser.Scene {
   // ------------------------- Спрайты башен -------------------------
   // Создаём картинку башни (если текстура загрузилась).
   createTowerSprite(tower) {
-    if (!this.textures.exists('tower')) return;
+    const textureKey = tower.config.texture;
+    if (!this.textures.exists(textureKey)) return;
 
     const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
-    tower.sprite = this.add.image(pos.x, pos.y, 'tower').setDepth(1);
+    tower.sprite = this.add.image(pos.x, pos.y, textureKey).setDepth(1);
     this.sizeTowerSprite(tower);
   }
 
@@ -1029,15 +1137,18 @@ class GameScene extends Phaser.Scene {
     // На дороге строить нельзя.
     if (this.isRoad(row, col)) return;
 
+    // Тип башни, выбранный в панели внизу.
+    const type = TOWER_TYPES[this.selectedTowerType];
+
     // Проверяем золото: не хватает — предупреждаем и не строим.
-    if (this.gold < TOWER_COST) {
+    if (this.gold < type.cost) {
       console.warn('Недостаточно золота для постройки башни!');
-      this.showMessage(`Не хватает золота! Нужно ${TOWER_COST}`);
+      this.showMessage(`Не хватает золота! Нужно ${type.cost}`);
       return;
     }
 
-    this.gold -= TOWER_COST;
-    const tower = new Tower(this, row, col);
+    this.gold -= type.cost;
+    const tower = new Tower(this, row, col, this.selectedTowerType);
     this.towers[row][col] = tower;
     this.createTowerSprite(tower);
     this.drawTowers(); // перерисовываем индикаторы уровня
