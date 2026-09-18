@@ -1027,23 +1027,12 @@ class GameScene extends Phaser.Scene {
     g.clear();
 
     for (const tower of this.towers) {
-      const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
-      const half = (this.cellSize * tower.config.footprint) / 2;
-
       // Запасной вариант: если картинки нет — рисуем кружок цветом типа.
       if (!this.textures.exists(tower.config.texture)) {
+        const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+        const half = (this.cellSize * tower.config.footprint) / 2;
         g.fillStyle(tower.config.color, 1);
         g.fillCircle(pos.x, pos.y, half);
-      }
-
-      // Уровень башни — белые точки под кружком (сколько точек, такой уровень).
-      const pipRadius = this.cellSize * 0.045;
-      const pipGap = this.cellSize * 0.14;
-      const pipY = pos.y + half * 0.75;
-      const startX = pos.x - ((tower.level - 1) * pipGap) / 2;
-      g.fillStyle(0xffffff, 1);
-      for (let i = 0; i < tower.level; i++) {
-        g.fillCircle(startX + i * pipGap, pipY, pipRadius);
       }
     }
   }
