@@ -244,7 +244,6 @@ def commands_text(role):
             "/tester @user или ID — выдать тестер",
             "/untester @user или ID — забрать тестер",
             "/players — список пользователей",
-            "/test — открыть тестовую версию игры",
         ]
     return "\n".join(lines)
 
