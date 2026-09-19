@@ -122,7 +122,7 @@ def user_nick(message):
     return name or "Игрок"
 
 
-def ensure_user(user_id, nick):
+def ensure_user(user_id, nick, username):
     """Заводим/обновляем пользователя. Роль по умолчанию — player."""
     if db is None:
         return
@@ -131,13 +131,18 @@ def ensure_user(user_id, nick):
     is_creator = str(user_id) == str(CREATOR_ID)
 
     if not snapshot.exists:
-        ref.set({
+        data = {
             "nick": nick,
             "role": "creator" if is_creator else "player",
             "updatedAt": firestore.SERVER_TIMESTAMP,
-        })
+        }
+        if username:
+            data["username"] = username.lower()
+        ref.set(data)
     else:
         update = {"nick": nick, "updatedAt": firestore.SERVER_TIMESTAMP}
+        if username:
+            update["username"] = username.lower()
         if is_creator:
             update["role"] = "creator"
         ref.set(update, merge=True)
@@ -151,6 +156,52 @@ def set_role(user_id, role):
         {"role": role, "updatedAt": firestore.SERVER_TIMESTAMP}, merge=True
     )
     return True
+
+
+def resolve_target(target):
+    """Находит игрока по @username или числовому ID. Возвращает (doc_id, ошибка)."""
+    if db is None:
+        return None, "Роли недоступны (нет ключа сервисного аккаунта)."
+
+    target = (target or "").strip()
+    if target.startswith("@"):
+        target = target[1:]
+
+    if target.isdigit():
+        return target, None
+    if not target:
+        return None, "Не указан пользователь."
+
+    docs = db.collection("users").where("username", "==", target.lower()).limit(1).stream()
+    for document in docs:
+        return document.id, None
+
+    return None, (
+        "Не нашёл такого пользователя. Пусть он сначала напишет боту /start, "
+        "или укажи числовой ID."
+    )
+
+
+def commands_text(role):
+    """Список доступных команд с учётом роли."""
+    lines = [
+        "📋 *Команды*",
+        "",
+        "/start — приветствие",
+        "/top — топ-10 игроков",
+        "/me — мой личный рекорд",
+        "/whoami — мой ID и роль",
+        "/help — этот список",
+    ]
+    if role == "creator":
+        lines += [
+            "",
+            "*Только для создателя:*",
+            "/tester @user или ID — выдать тестер",
+            "/untester @user или ID — забрать тестер",
+            "/players — список пользователей",
+        ]
+    return "\n".join(lines)
 
 
 # --------------------------- Таблица лидеров ---------------------------
@@ -214,19 +265,29 @@ def handle_update(update):
         return
 
     chat_id = message["chat"]["id"]
-    user_id = str(message.get("from", {}).get("id", ""))
+    sender = message.get("from", {})
+    user_id = str(sender.get("id", ""))
+    username = sender.get("username")
     text = (message.get("text") or "").strip()
 
-    ensure_user(user_id, user_nick(message))
+    ensure_user(user_id, user_nick(message), username)
     is_creator = str(user_id) == str(CREATOR_ID)
 
-    if text in ("/start", "/help", "/menu"):
+    role = "player"
+    if db is not None:
+        snapshot = db.collection("users").document(user_id).get()
+        if snapshot.exists:
+            role = snapshot.to_dict().get("role", "player")
+    if is_creator:
+        role = "creator"
+
+    if text in ("/start", "/menu"):
         send_message(
             chat_id,
-            "👋 Привет! Это бот игры *Tower Defense*.\n\n"
-            f"{TOP_BUTTON} — лучшие игроки\n"
-            f"{ME_BUTTON} — твой личный рекорд",
+            "👋 Привет! Это бот игры *Tower Defense*.\n\n" + commands_text(role),
         )
+    elif text in ("/help", "/commands"):
+        send_message(chat_id, commands_text(role))
     elif text in ("/top", "/leaderboard", TOP_BUTTON):
         try:
             send_message(chat_id, format_top(load_leaderboard()))
@@ -240,27 +301,26 @@ def handle_update(update):
             print("Ошибка чтения Firebase:", error)
             send_message(chat_id, "⚠️ Не удалось загрузить рекорд. Попробуй позже.")
     elif text == "/whoami":
-        role = "player"
-        if db is not None:
-            snapshot = db.collection("users").document(user_id).get()
-            if snapshot.exists:
-                role = snapshot.to_dict().get("role", "player")
         send_message(chat_id, f"Твой ID: `{user_id}`\nРоль: *{role}*")
     elif text.startswith("/tester") or text.startswith("/untester"):
         if not is_creator:
             send_message(chat_id, "⛔ Команда только для создателя.")
             return
-        parts = text.split()
-        if len(parts) < 2:
-            send_message(chat_id, "Укажи ID: `/tester 123456789`")
+        parts = text.split(maxsplit=1)
+        if len(parts) < 2 or not parts[1].strip():
+            send_message(chat_id, "Укажи пользователя: `/tester @username` или `/tester 123456789`")
             return
         target = parts[1].strip()
-        role = "tester" if text.startswith("/tester") else "player"
-        if set_role(target, role):
-            label = ROLE_LABELS.get(role) or "player"
-            send_message(chat_id, f"✅ Пользователю `{target}` выдана роль: *{label}*")
+        new_role = "tester" if text.startswith("/tester") else "player"
+        doc_id, error = resolve_target(target)
+        if error:
+            send_message(chat_id, f"⚠️ {error}")
+            return
+        if set_role(doc_id, new_role):
+            label = ROLE_LABELS.get(new_role) or "player"
+            send_message(chat_id, f"✅ `{target}` — роль: *{label}*")
         else:
-            send_message(chat_id, "⚠️ Роли недоступны (нет ключа сервисного аккаунта).")
+            send_message(chat_id, "⚠️ Не удалось сохранить роль.")
     elif text == "/players":
         if not is_creator:
             send_message(chat_id, "⛔ Команда только для создателя.")
@@ -271,7 +331,10 @@ def handle_update(update):
         lines = ["👥 *Пользователи*", ""]
         for document in db.collection("users").stream():
             data = document.to_dict()
-            lines.append(f"`{document.id}` — {data.get('role', 'player')} — {data.get('nick', '')}")
+            uname = " @" + data["username"] if data.get("username") else ""
+            lines.append(
+                f"`{document.id}` — {data.get('role', 'player')} — {data.get('nick', '')}{uname}"
+            )
         send_message(chat_id, "\n".join(lines[:40]))
 
 
