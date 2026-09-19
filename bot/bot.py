@@ -54,10 +54,21 @@ FIRESTORE_URL = (
 TOP_BUTTON = "🏆 Топ-10"
 ME_BUTTON = "📊 Мой рекорд"
 SETTINGS_BUTTON = "⚙ Настройки"
+TEST_BUTTON = "🧪 Тест"
+BETA_URL = "https://telegram-tower-defense-git-beta-gyviii.vercel.app"
 MENU_KEYBOARD = {
     "keyboard": [[{"text": TOP_BUTTON}, {"text": ME_BUTTON}], [{"text": SETTINGS_BUTTON}]],
     "resize_keyboard": True,
 }
+CURRENT_KEYBOARD = MENU_KEYBOARD
+
+
+def menu_keyboard(role):
+    """Клавиатура внизу. Создателю/тестерам добавляем кнопку тестовой версии."""
+    rows = [[{"text": TOP_BUTTON}, {"text": ME_BUTTON}], [{"text": SETTINGS_BUTTON}]]
+    if role in ("creator", "tester"):
+        rows.append([{"text": TEST_BUTTON, "web_app": {"url": BETA_URL}}])
+    return {"keyboard": rows, "resize_keyboard": True}
 
 TOP_LIMIT = 10
 ROLE_LABELS = {"creator": "создатель", "tester": "тестер", "player": ""}
@@ -107,7 +118,7 @@ def send_message(chat_id, text, markdown=True, keyboard=None):
     payload = {
         "chat_id": chat_id,
         "text": text,
-        "reply_markup": keyboard if keyboard is not None else MENU_KEYBOARD,
+        "reply_markup": keyboard if keyboard is not None else CURRENT_KEYBOARD,
     }
     if markdown:
         payload["parse_mode"] = "Markdown"
@@ -233,6 +244,7 @@ def commands_text(role):
             "/tester @user или ID — выдать тестер",
             "/untester @user или ID — забрать тестер",
             "/players — список пользователей",
+            "/test — открыть тестовую версию игры",
         ]
     return "\n".join(lines)
 
@@ -330,6 +342,8 @@ def handle_callback(callback):
 
 
 def handle_update(update):
+    global CURRENT_KEYBOARD
+
     callback = update.get("callback_query")
     if callback:
         handle_callback(callback)
@@ -355,6 +369,9 @@ def handle_update(update):
             role = snapshot.to_dict().get("role", "player")
     if is_creator:
         role = "creator"
+
+    # Клавиатура внизу (тестерам/создателю — с кнопкой тестовой версии).
+    CURRENT_KEYBOARD = menu_keyboard(role)
 
     if text in ("/start", "/menu"):
         send_message(
