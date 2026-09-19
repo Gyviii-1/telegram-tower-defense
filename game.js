@@ -12,7 +12,10 @@
 
 // ----------------------------- Константы -----------------------------
 // Адрес серверного API (Vercel).
-const API_BASE = 'https://telegram-tower-defense.vercel.app';
+// На тестовой версии (домен vercel.app) API на том же домене — без CORS.
+const API_BASE = location.hostname.endsWith('vercel.app')
+  ? ''
+  : 'https://telegram-tower-defense.vercel.app';
 
 const GRID_SIZE = 10;             // размер сетки: 10 на 10 клеток
 const BG_COLOR = 0x1a1a2e;        // цвет фона сцены
