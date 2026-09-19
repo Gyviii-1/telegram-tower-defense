@@ -951,16 +951,92 @@ class GameScene extends Phaser.Scene {
     });
     this.rulesPanel.add([this.rulesBg, this.rulesText, this.rulesBack]);
 
-    this.menu.add([
-      this.menuBg,
+    // Страницы меню.
+    this.lobbyPage = this.add.container(0, 0);
+    this.lobbyPage.add([
       this.menuTitle,
       this.menuProfile,
       this.menuBest,
       this.menuPlay,
       this.menuRules,
+    ]);
+
+    this.inventoryPage = this.add.container(0, 0).setVisible(false);
+    this.inventoryText = this.add
+      .text(0, 0, 'ИНВЕНТАРЬ\n\nСкоро здесь появятся твои предметы', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '22px',
+        color: '#bdc3c7',
+        align: 'center',
+        lineSpacing: 8,
+      })
+      .setOrigin(0.5);
+    this.inventoryPage.add(this.inventoryText);
+
+    this.shopPage = this.add.container(0, 0).setVisible(false);
+    this.shopText = this.add
+      .text(0, 0, 'МАГАЗИН\n\nСкоро', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '22px',
+        color: '#bdc3c7',
+        align: 'center',
+        lineSpacing: 8,
+      })
+      .setOrigin(0.5);
+    this.shopPage.add(this.shopText);
+
+    // Нижние вкладки.
+    this.tabBar = this.add.container(0, 0);
+    this.tabInventory = this.makeTab('Инвентарь', 'inventory');
+    this.tabLobby = this.makeTab('Лобби', 'lobby');
+    this.tabShop = this.makeTab('Магазин', 'shop');
+    this.tabBar.add([this.tabInventory, this.tabLobby, this.tabShop]);
+
+    this.menu.add([
+      this.menuBg,
+      this.lobbyPage,
+      this.inventoryPage,
+      this.shopPage,
+      this.tabBar,
       this.menuHint,
       this.rulesPanel,
     ]);
+
+    this.selectTab('lobby');
+  }
+
+  // Кнопка вкладки меню.
+  makeTab(label, key) {
+    const tab = this.add
+      .text(0, 0, label, {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '20px',
+        color: '#ffffff',
+        backgroundColor: '#1f2b3a',
+        padding: { x: 16, y: 10 },
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+    tab.tabKey = key;
+    tab.on('pointerdown', (pointer, localX, localY, event) => {
+      if (event && event.stopPropagation) event.stopPropagation();
+      this.selectTab(key);
+    });
+    return tab;
+  }
+
+  // Переключить вкладку меню.
+  selectTab(key) {
+    this.currentTab = key;
+    if (this.lobbyPage) this.lobbyPage.setVisible(key === 'lobby');
+    if (this.inventoryPage) this.inventoryPage.setVisible(key === 'inventory');
+    if (this.shopPage) this.shopPage.setVisible(key === 'shop');
+
+    const tabs = [this.tabLobby, this.tabInventory, this.tabShop];
+    for (const tab of tabs) {
+      if (!tab) continue;
+      tab.setBackgroundColor(tab.tabKey === key ? '#2ecc71' : '#1f2b3a');
+    }
   }
 
   // Обновляем текст панели при изменении волны/жизней/золота.
@@ -1543,8 +1619,8 @@ class GameScene extends Phaser.Scene {
     this.uiText.setPosition(width - pad, pad);
     this.uiText.setStyle({ fontSize: `${Math.round(uiSize)}px` });
 
-    // Кнопка старта волны — левый верхний угол; прячем, пока волна активна.
-    this.startButton.setPosition(pad, pad);
+    // Кнопка старта волны — внизу слева, над панелью постройки.
+    this.startButton.setPosition(pad, height - uiSize * 4.6);
     this.startButton.setStyle({ fontSize: `${Math.round(uiSize)}px` });
     this.startButton.setVisible(!this.isWaveActive && !this.isGameOver);
 
@@ -1587,15 +1663,31 @@ class GameScene extends Phaser.Scene {
       this.menuBest.setPosition(width / 2, height * 0.49);
       this.menuBest.setStyle({ fontSize: `${Math.round(menuSize * 0.045)}px` });
 
-      this.menuPlay.setPosition(width / 2, height * 0.61);
+      this.menuPlay.setPosition(width / 2, height * 0.6);
       this.menuPlay.setStyle({ fontSize: `${Math.round(menuSize * 0.07)}px` });
 
-      this.menuRules.setPosition(width / 2, height * 0.72);
+      this.menuRules.setPosition(width / 2, height * 0.71);
       this.menuRules.setStyle({ fontSize: `${Math.round(menuSize * 0.05)}px` });
 
-      this.menuHint.setPosition(width / 2, height * 0.92);
+      this.inventoryText.setPosition(width / 2, height * 0.45);
+      this.inventoryText.setStyle({ fontSize: `${Math.round(menuSize * 0.05)}px` });
+
+      this.shopText.setPosition(width / 2, height * 0.45);
+      this.shopText.setStyle({ fontSize: `${Math.round(menuSize * 0.05)}px` });
+
+      // Нижние вкладки.
+      const tabY = height * 0.93;
+      this.tabInventory.setPosition(width * 0.2, tabY);
+      this.tabLobby.setPosition(width * 0.5, tabY);
+      this.tabShop.setPosition(width * 0.8, tabY);
+      const tabFont = `${Math.round(menuSize * 0.045)}px`;
+      this.tabInventory.setStyle({ fontSize: tabFont });
+      this.tabLobby.setStyle({ fontSize: tabFont });
+      this.tabShop.setStyle({ fontSize: tabFont });
+
+      this.menuHint.setPosition(width / 2, height * 0.85);
       this.menuHint.setText(height > width ? 'Поверни телефон горизонтально' : '');
-      this.menuHint.setStyle({ fontSize: `${Math.round(menuSize * 0.045)}px` });
+      this.menuHint.setStyle({ fontSize: `${Math.round(menuSize * 0.04)}px` });
 
       // Панель правил.
       this.rulesBg.setPosition(0, 0);
