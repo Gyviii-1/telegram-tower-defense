@@ -33,12 +33,29 @@ module.exports = async (req, res) => {
     const bestSnap = await db.collection('leaderboard').doc(id).get();
     const bestData = bestSnap.exists ? bestSnap.data() : {};
 
+    // Место в рейтинге (среди не скрытых).
+    const hidden = new Set();
+    const hiddenSnap = await db.collection('users').where('hidden', '==', true).get();
+    hiddenSnap.forEach((doc) => hidden.add(doc.id));
+
+    const allSnap = await db.collection('leaderboard').get();
+    const list = [];
+    allSnap.forEach((doc) => {
+      if (hidden.has(doc.id)) return;
+      const item = doc.data();
+      list.push({ id: doc.id, wave: item.wave || 0, gold: item.gold || 0 });
+    });
+    list.sort((a, b) => b.wave - a.wave || b.gold - a.gold);
+    const rank = list.findIndex((item) => item.id === id) + 1;
+
     return res.status(200).json({
       ok: true,
       role,
       beta: role === 'creator' || role === 'tester',
       hidden: !!data.hidden,
       best: { wave: bestData.wave || 0, gold: bestData.gold || 0 },
+      rank,
+      total: list.length,
       nick: nickFor(auth.user),
     });
   } catch (error) {
