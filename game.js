@@ -362,8 +362,22 @@ class GameScene extends Phaser.Scene {
 
   // Предзагрузка изображений (вызывается Phaser автоматически до create).
   preload() {
+    // Базовые картинки башен (запасной вариант, если нет спрайтов по уровням).
     this.load.image('tower', 'assets/tower.png');
     this.load.image('tower_minigun', 'assets/tower_minigun.png');
+
+    // Картинки башен по уровням: assets/archer_1.png ... archer_5.png и т.д.
+    for (const key in TOWER_TYPES) {
+      for (let level = 1; level <= TOWER_MAX_LEVEL; level++) {
+        this.load.image(`${key}_${level}`, `assets/${key}_${level}.png`);
+      }
+    }
+
+    // Если спрайта уровня ещё нет — это не ошибка, используем базовую картинку.
+    this.load.on('loaderror', (file) => {
+      if (file && /_\d+$/.test(file.key)) return;
+      console.warn('Не загрузился файл:', file && file.key);
+    });
   }
 
   create() {
@@ -387,13 +401,9 @@ class GameScene extends Phaser.Scene {
     // Тип башни, который строим по клику (переключается панелью внизу).
     this.selectedTowerType = 'archer';
 
-    // Авто-замер картинок башен: где у них непрозрачная часть и её центр.
-    // Благодаря этому спрайт встаёт ровно и нужного размера без ручной подгонки.
-    this.towerVisuals = {};
-    for (const key in TOWER_TYPES) {
-      const visual = this.measureTexture(TOWER_TYPES[key].texture);
-      if (visual) this.towerVisuals[key] = visual;
-    }
+    // Кэш замеров картинок: где у них непрозрачная часть и её центр.
+    // Заполняется лениво (при первом использовании текстуры).
+    this.visualCache = {};
 
     // Башни хранятся списком (свободная установка, без привязки к клеткам).
     this.towers = [];
@@ -727,6 +737,7 @@ class GameScene extends Phaser.Scene {
 
     this.gold -= cost;
     tower.upgrade(cost);
+    this.refreshTowerSprite(tower); // меняем картинку на спрайт нового уровня
     this.drawTowers();
     this.refreshTowerMenu();
     this.updateUI();
@@ -770,7 +781,9 @@ class GameScene extends Phaser.Scene {
         this.selectTowerType(key);
       });
 
-      const icon = this.add.image(0, -14, type.texture).setDisplaySize(40, 40);
+      const icon = this.add
+        .image(0, -14, this.getTowerTextureKey(key, 1))
+        .setDisplaySize(40, 40);
       const label = this.add
         .text(0, 26, `${type.name} · ${type.cost}`, {
           fontFamily: 'Arial, sans-serif',
@@ -1040,20 +1053,47 @@ class GameScene extends Phaser.Scene {
   // ------------------------- Спрайты башен -------------------------
   // Создаём картинку башни (если текстура загрузилась).
   createTowerSprite(tower) {
-    const textureKey = tower.config.texture;
+    const textureKey = this.getTowerTextureKey(tower.typeKey, tower.level);
     if (!this.textures.exists(textureKey)) return;
 
     const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
     tower.sprite = this.add.image(pos.x, pos.y, textureKey).setDepth(1);
-    this.applyTowerVisual(tower.sprite, tower.typeKey);
+    this.applyTowerVisual(tower.sprite, textureKey, tower.config.footprint);
+  }
+
+  // Меняем картинку башни (например, после улучшения уровня).
+  refreshTowerSprite(tower) {
+    if (!tower.sprite) {
+      this.createTowerSprite(tower);
+      return;
+    }
+
+    const textureKey = this.getTowerTextureKey(tower.typeKey, tower.level);
+    if (this.textures.exists(textureKey)) {
+      tower.sprite.setTexture(textureKey);
+    }
+    this.applyTowerVisual(tower.sprite, textureKey, tower.config.footprint);
+
+    const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+    tower.sprite.setPosition(pos.x, pos.y);
+  }
+
+  // Ключ картинки для типа и уровня: "archer_3", "minigun_1" и т.д.
+  // Если спрайта этого уровня ещё нет — берём ближайший предыдущий,
+  // а если и их нет — базовую картинку типа.
+  getTowerTextureKey(typeKey, level) {
+    for (let current = level; current >= 1; current--) {
+      const key = `${typeKey}_${current}`;
+      if (this.textures.exists(key)) return key;
+    }
+    return TOWER_TYPES[typeKey].texture;
   }
 
   // Вписываем картинку башни в её footprint и ставим точку опоры в центр
   // непрозрачной части — тогда спрайт встаёт ровно, как бы он ни был нарисован.
-  applyTowerVisual(image, typeKey) {
-    const type = TOWER_TYPES[typeKey];
-    const visual = this.towerVisuals[typeKey];
-    const contentPx = this.cellSize * type.footprint; // нужный размер самого рисунка
+  applyTowerVisual(image, textureKey, footprint) {
+    const visual = this.getVisual(textureKey);
+    const contentPx = this.cellSize * footprint; // нужный размер самого рисунка
 
     if (visual) {
       image.setOrigin(visual.originX, visual.originY);
@@ -1063,6 +1103,14 @@ class GameScene extends Phaser.Scene {
       image.setOrigin(0.5, 0.5);
       image.setDisplaySize(contentPx, contentPx);
     }
+  }
+
+  // Ленивый замер картинки (с кэшем), чтобы не сканировать её повторно.
+  getVisual(textureKey) {
+    if (!(textureKey in this.visualCache)) {
+      this.visualCache[textureKey] = this.measureTexture(textureKey);
+    }
+    return this.visualCache[textureKey];
   }
 
   // Измеряем картинку: какую долю занимает непрозрачная часть и где её центр.
@@ -1116,7 +1164,8 @@ class GameScene extends Phaser.Scene {
       if (!tower.sprite) continue;
       const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
       tower.sprite.setPosition(pos.x, pos.y);
-      this.applyTowerVisual(tower.sprite, tower.typeKey);
+      const textureKey = this.getTowerTextureKey(tower.typeKey, tower.level);
+      this.applyTowerVisual(tower.sprite, textureKey, tower.config.footprint);
     }
   }
 
@@ -1316,8 +1365,9 @@ class GameScene extends Phaser.Scene {
     }
 
     const pos = { x: this.offsetX + gx * this.cellSize, y: this.offsetY + gy * this.cellSize };
-    this.ghost.setTexture(type.texture);
-    this.applyTowerVisual(this.ghost, this.selectedTowerType);
+    const ghostTexture = this.getTowerTextureKey(this.selectedTowerType, 1);
+    this.ghost.setTexture(ghostTexture);
+    this.applyTowerVisual(this.ghost, ghostTexture, type.footprint);
     this.ghost.setPosition(pos.x, pos.y);
 
     const canPlace = this.isFreeSpot(gx, gy, type) && this.gold >= type.cost;
