@@ -17,6 +17,9 @@ const API_BASE = location.hostname.endsWith('vercel.app')
   ? ''
   : 'https://telegram-tower-defense.vercel.app';
 
+// Стартовое меню показываем один раз за сессию (не при каждом рестарте).
+let mainMenuShown = false;
+
 const GRID_SIZE = 10;             // размер сетки: 10 на 10 клеток
 const BG_COLOR = 0x1a1a2e;        // цвет фона сцены
 const CELL_COLOR = 0x16213e;      // заливка обычной (свободной) клетки
@@ -595,6 +598,12 @@ class GameScene extends Phaser.Scene {
     this.loadPlayerRole();
     this.flushPendingScores();
 
+    // Стартовое меню (один раз за сессию).
+    if (!mainMenuShown) {
+      mainMenuShown = true;
+      this.showMenu(true);
+    }
+
     // ПКМ не должна открывать контекстное меню браузера.
     if (this.input.mouse) this.input.mouse.disableContextMenu();
 
@@ -821,6 +830,70 @@ class GameScene extends Phaser.Scene {
       .container(0, 0, [this.ghostBase, this.ghostWeapon])
       .setDepth(5)
       .setVisible(false);
+
+    // ------------------------- Стартовое меню -------------------------
+    this.menu = this.add.container(0, 0).setDepth(200).setVisible(false);
+
+    this.menuBg = this.add
+      .rectangle(0, 0, 1, 1, 0x0d0d1a, 0.94)
+      .setOrigin(0, 0)
+      .setInteractive();
+    this.menuBg.on('pointerdown', (pointer, localX, localY, event) => {
+      if (event && event.stopPropagation) event.stopPropagation();
+    });
+
+    this.menuTitle = this.add
+      .text(0, 0, 'TOWER DEFENSE', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '48px',
+        color: '#2ecc71',
+        stroke: '#000000',
+        strokeThickness: 6,
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5);
+
+    this.menuProfile = this.add
+      .text(0, 0, '', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '20px',
+        color: '#ffffff',
+      })
+      .setOrigin(0.5);
+
+    this.menuPlay = this.add
+      .text(0, 0, 'ИГРАТЬ', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '30px',
+        color: '#ffffff',
+        backgroundColor: '#2ecc71',
+        padding: { x: 30, y: 14 },
+        stroke: '#000000',
+        strokeThickness: 3,
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+    this.menuPlay.on('pointerdown', (pointer, localX, localY, event) => {
+      if (event && event.stopPropagation) event.stopPropagation();
+      this.showMenu(false);
+    });
+
+    this.menuHint = this.add
+      .text(0, 0, '', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '16px',
+        color: '#f1c40f',
+      })
+      .setOrigin(0.5);
+
+    this.menu.add([
+      this.menuBg,
+      this.menuTitle,
+      this.menuProfile,
+      this.menuPlay,
+      this.menuHint,
+    ]);
   }
 
   // Обновляем текст панели при изменении волны/жизней/золота.
@@ -868,6 +941,7 @@ class GameScene extends Phaser.Scene {
       if (!data.ok) return;
 
       this.playerRole = data.role || 'player';
+      this.refreshMenuProfile();
       this.updateUI();
     } catch (error) {
       console.warn('Не удалось загрузить роль:', error);
@@ -1201,6 +1275,33 @@ class GameScene extends Phaser.Scene {
 
     telegram.ready(); // сообщаем Telegram, что приложение готово
     telegram.expand(); // разворачиваем на весь экран
+
+    // Пробуем полноэкранный режим и фиксацию ориентации (если поддерживается).
+    try {
+      if (telegram.requestFullscreen) telegram.requestFullscreen();
+    } catch (error) {
+      /* не критично */
+    }
+    try {
+      if (telegram.lockOrientation) telegram.lockOrientation();
+    } catch (error) {
+      /* не критично */
+    }
+  }
+
+  // Показать/скрыть стартовое меню.
+  showMenu(visible) {
+    if (!this.menu) return;
+    if (visible) this.refreshMenuProfile();
+    this.menu.setVisible(visible);
+  }
+
+  // Ник и роль в меню.
+  refreshMenuProfile() {
+    if (!this.menuProfile) return;
+    const nick = this.playerInfo ? this.playerInfo.nick : 'Игрок';
+    const prefix = this.roleLabel(this.playerRole);
+    this.menuProfile.setText(prefix ? `${nick} · ${prefix}` : nick);
   }
 
   // Данные игрока: id (для документа) и ник (из профиля Telegram).
@@ -1377,6 +1478,26 @@ class GameScene extends Phaser.Scene {
     // Панель постройки башен.
     this.layoutBuildMenu(width, height);
     this.buildMenu.setVisible(!this.isGameOver);
+
+    // Стартовое меню.
+    if (this.menuBg) {
+      this.menuBg.setPosition(0, 0);
+      this.menuBg.setSize(width, height);
+
+      const menuSize = Math.min(width, height);
+      this.menuTitle.setPosition(width / 2, height * 0.35);
+      this.menuTitle.setStyle({ fontSize: `${Math.round(menuSize * 0.09)}px` });
+
+      this.menuProfile.setPosition(width / 2, height * 0.5);
+      this.menuProfile.setStyle({ fontSize: `${Math.round(menuSize * 0.05)}px` });
+
+      this.menuPlay.setPosition(width / 2, height * 0.66);
+      this.menuPlay.setStyle({ fontSize: `${Math.round(menuSize * 0.07)}px` });
+
+      this.menuHint.setPosition(width / 2, height * 0.9);
+      this.menuHint.setText(height > width ? 'Поверни телефон горизонтально' : '');
+      this.menuHint.setStyle({ fontSize: `${Math.round(menuSize * 0.045)}px` });
+    }
   }
 
   // Рисуем клетки сетки. Дорогу подсвечиваем другим цветом.
