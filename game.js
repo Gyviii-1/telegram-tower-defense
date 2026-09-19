@@ -11,9 +11,8 @@
 // они скачиваются только в момент сохранения рекорда.
 
 // ----------------------------- Константы -----------------------------
-// Данные проекта Firebase (публичные; нужны для чтения роли игрока).
-const FIREBASE_PROJECT_ID = 'telegram-tower-defense';
-const FIREBASE_API_KEY = 'AIzaSyDSIr6tflEu5cYQNXexM0co5hqkDXMVd8Y';
+// Адрес серверного API (Vercel). Подставим точный после деплоя.
+const API_BASE = 'https://telegram-tower-defense.vercel.app';
 
 const GRID_SIZE = 10;             // размер сетки: 10 на 10 клеток
 const BG_COLOR = 0x1a1a2e;        // цвет фона сцены
@@ -590,8 +589,9 @@ class GameScene extends Phaser.Scene {
     this.scale.on('resize', this.layout, this);
     this.updateUI();
 
-    // Подгружаем роль игрока (лёгкий запрос, без Firebase SDK).
+    // Подгружаем роль игрока и досылаем несохранённые рекорды.
     this.loadPlayerRole();
+    this.flushPendingScores();
 
     // ПКМ не должна открывать контекстное меню браузера.
     if (this.input.mouse) this.input.mouse.disableContextMenu();
@@ -838,22 +838,30 @@ class GameScene extends Phaser.Scene {
     return '';
   }
 
-  // Читаем роль игрока из Firestore (REST, без загрузки Firebase SDK).
+  // Строка initData из Telegram — именно её проверяет сервер.
+  getInitData() {
+    const telegram = window.Telegram ? window.Telegram.WebApp : null;
+    return telegram ? telegram.initData || '' : '';
+  }
+
+  // Роль игрока берём у сервера после проверки initData.
   async loadPlayerRole() {
-    const id = this.playerInfo ? this.playerInfo.id : null;
-    if (!id || id === 'test_player') return;
+    const initData = this.getInitData();
+    if (!initData) return;
 
     try {
-      const url =
-        `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}` +
-        `/databases/(default)/documents/users/${id}?key=${FIREBASE_API_KEY}`;
-      const response = await fetch(url);
+      const response = await fetch(`${API_BASE}/api/me`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ initData }),
+      });
       if (!response.ok) return;
 
       const data = await response.json();
-      const role = (data.fields && data.fields.role && data.fields.role.stringValue) || 'player';
-      this.playerRole = role;
-      this.isBeta = role === 'creator' || role === 'tester';
+      if (!data.ok) return;
+
+      this.playerRole = data.role || 'player';
+      this.isBeta = !!data.beta;
       this.updateUI();
     } catch (error) {
       console.warn('Не удалось загрузить роль:', error);
@@ -1206,43 +1214,71 @@ class GameScene extends Phaser.Scene {
     return { id: 'test_player', nick: 'Гость' };
   }
 
-  // Сохраняем рекорд игрока в Firestore: коллекция "leaderboard",
-  // документ — id игрока в Telegram (у каждого свой личный рекорд).
-  // Записываем только если новый результат лучше прошлого.
+  // Сохраняем рекорд ЧЕРЕЗ СЕРВЕР. Клиент напрямую в Firestore не пишет:
+  // сервер проверит initData, сам определит Telegram ID и запишет рекорд.
   async saveRecord() {
-    const player = this.playerInfo || this.getPlayerInfo();
-    const newRecord = {
-      nick: player.nick,
+    const payload = {
+      initData: this.getInitData(),
       wave: this.currentWave,
       gold: this.gold,
-      savedAt: new Date().toISOString(),
     };
 
+    const sent = await this.sendScore(payload);
+    if (sent) {
+      console.log('Рекорд сохранён на сервере!');
+      return;
+    }
+
+    // Сервер недоступен — не теряем результат: отправим позже.
+    this.queueScore(payload);
+    console.log('Сервер недоступен — рекорд сохранён локально и отправится позже.');
+  }
+
+  // Отправка одного рекорда на сервер. true — если сервер принял.
+  async sendScore(payload) {
     try {
-      // Подключаем Firebase только сейчас — при первом сохранении.
-      const { db } = await import('./firebase-config.js');
-      const { doc, getDoc, setDoc } = await import(
-        'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js'
-      );
-
-      const reference = doc(db, 'leaderboard', player.id);
-      const snapshot = await getDoc(reference);
-      const previous = snapshot.exists() ? snapshot.data() : null;
-
-      const isBetter =
-        !previous ||
-        newRecord.wave > (previous.wave || 0) ||
-        (newRecord.wave === (previous.wave || 0) && newRecord.gold > (previous.gold || 0));
-
-      if (!isBetter) {
-        console.log('Прошлый рекорд лучше — не перезаписываем.');
-        return;
-      }
-
-      await setDoc(reference, newRecord);
-      console.log('Рекорд успешно сохранен в Firebase!');
+      const response = await fetch(`${API_BASE}/api/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      return response.ok;
     } catch (error) {
-      console.error('Не удалось сохранить рекорд в Firebase:', error);
+      return false;
+    }
+  }
+
+  // Кладём несохранённый рекорд в локальную очередь (localStorage).
+  queueScore(payload) {
+    try {
+      const queue = JSON.parse(localStorage.getItem('td_pending_scores') || '[]');
+      queue.push(payload);
+      localStorage.setItem('td_pending_scores', JSON.stringify(queue));
+    } catch (error) {
+      console.warn('Не удалось сохранить рекорд локально:', error);
+    }
+  }
+
+  // Пытаемся дослать все накопившиеся рекорды.
+  async flushPendingScores() {
+    let queue = [];
+    try {
+      queue = JSON.parse(localStorage.getItem('td_pending_scores') || '[]');
+    } catch (error) {
+      queue = [];
+    }
+    if (queue.length === 0) return;
+
+    const remaining = [];
+    for (const payload of queue) {
+      const sent = await this.sendScore(payload);
+      if (!sent) remaining.push(payload);
+    }
+
+    try {
+      localStorage.setItem('td_pending_scores', JSON.stringify(remaining));
+    } catch (error) {
+      /* ignore */
     }
   }
 

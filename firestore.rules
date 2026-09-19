@@ -10,33 +10,18 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Проверяем, что запись состоит ровно из ожидаемых полей и типов.
-    function isValidRecord(data) {
-      return data.keys().hasOnly(['nick', 'wave', 'gold', 'savedAt'])
-          && data.nick is string && data.nick.size() <= 40
-          && data.wave is int && data.wave >= 0 && data.wave <= 100000
-          && data.gold is int && data.gold >= 0 && data.gold <= 1000000
-          && data.savedAt is string && data.savedAt.size() <= 40;
-    }
-
-    // Таблица лидеров.
+    // Таблица лидеров: читают все, но ЗАПИСЬ только через сервер
+    // (Vercel API + Firebase Admin). Клиент напрямую писать не может.
     match /leaderboard/{playerId} {
-      // Читают все (нужно и игре, и боту).
       allow read: if true;
-
-      // Создавать и обновлять можно только свой документ (id = id игрока),
-      // и только если поля валидны. Удалять нельзя.
-      allow create, update: if playerId.size() <= 64
-                            && isValidRecord(request.resource.data);
-      allow delete: if false;
+      allow write: if false;
     }
 
     // Пользователи и роли (creator / tester / player).
-    // Читать может любой клиент (игре нужно узнать свою роль),
-    // а писать — только сервисный аккаунт (бот обходит правила).
+    // Клиенту доступ закрыт полностью: роль отдаёт сервер (Vercel API).
+    // Пишет и читает только сервисный аккаунт (бот/API обходят правила).
     match /users/{userId} {
-      allow read: if true;
-      allow write: if false;
+      allow read, write: if false;
     }
 
     // Всё остальное в базе запрещено.

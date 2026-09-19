@@ -1,0 +1,12 @@
+{
+  "name": "telegram-tower-defense-api",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Serverless API for Tower Defense: проверка Telegram initData и запись рекордов.",
+  "engines": {
+    "node": "20.x"
+  },
+  "dependencies": {
+    "firebase-admin": "^12.6.0"
+  }
+}
