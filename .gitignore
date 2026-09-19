@@ -1,4 +1,11 @@
 # Локальные секреты бота — не публикуем.
 bot/config.py
+bot/service-account.json
+bot/*service-account*.json
 bot/__pycache__/
 *.log
+
+# Служебные бэкапы Krita и прочих редакторов.
+*~
+assets/*~
+

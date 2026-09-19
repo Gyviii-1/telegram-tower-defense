@@ -6,12 +6,15 @@
 // ВАЖНО: game.js подключается как ES-модуль (<script type="module">),
 // поэтому здесь доступны оператор import и значения из других модулей.
 
-// База данных Firestore из firebase-config.js.
-import { db } from './firebase-config.js';
-// Функции Firestore: doc — адрес документа, setDoc — запись данных.
-import { doc, getDoc, setDoc } from 'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js';
+// Firebase подключается ЛЕНИВО — прямо в saveRecord (см. ниже).
+// Так большие скрипты gstatic не тормозят открытие игры:
+// они скачиваются только в момент сохранения рекорда.
 
 // ----------------------------- Константы -----------------------------
+// Данные проекта Firebase (публичные; нужны для чтения роли игрока).
+const FIREBASE_PROJECT_ID = 'telegram-tower-defense';
+const FIREBASE_API_KEY = 'AIzaSyDSIr6tflEu5cYQNXexM0co5hqkDXMVd8Y';
+
 const GRID_SIZE = 10;             // размер сетки: 10 на 10 клеток
 const BG_COLOR = 0x1a1a2e;        // цвет фона сцены
 const CELL_COLOR = 0x16213e;      // заливка обычной (свободной) клетки
@@ -21,6 +24,7 @@ const GRID_LINE_COLOR = 0x0f3460; // цвет линий сетки
 const TOWER_COLOR = 0x2ecc71;     // акцентный цвет интерфейса башен
 const TOWER_MAX_LEVEL = 5;        // максимальный уровень башни
 const TOWER_SELL_RATIO = 0.7;     // возврат золота при продаже (70% вложенного)
+const TOWER_MOVE_SPEED = 3;       // скорость ходьбы башни при переносе (клеток/сек)
 // Размер спрайта (size) и радиус для коллизий/кликов (radius) задаются
 // индивидуально у каждого типа в TOWER_TYPES.
 
@@ -34,7 +38,8 @@ const TOWER_TYPES = {
     fireRate: 1,
     damage: 1,
     accuracy: 1, // всегда попадает
-    footprint: 0.7, // размер всей картинки в клетках (игра сама впишет в него спрайт)
+    footprint: 0.7, // размер корпуса в клетках
+    weaponScale: 0.5, // во сколько раз пушка меньше корпуса
     baseTexture: 'tower', // корпус (стоит на месте)
     texture: 'tower', // запасная картинка
     color: 0x2ecc71,
@@ -47,29 +52,100 @@ const TOWER_TYPES = {
     damage: 1,
     accuracy: 0.7,   // 70% попаданий, 30% — разброс
     footprint: 1.0,  // крупнее стрелка
+    weaponScale: 0.75, // пулемёт крупнее пистолета
     baseTexture: 'tower_minigun', // корпус (стоит на месте)
     texture: 'tower_minigun', // запасная картинка
     color: 0x3498db,
+  },
+  bridge: {
+    name: 'Мост',
+    cost: 30,
+    range: 0,
+    fireRate: 0,
+    damage: 0,
+    accuracy: 1,
+    footprint: 1.4, // мост крупнее юнита примерно вдвое
+    weaponScale: 0,
+    isBridge: true,   // ставится на дорогу и разрешает по ней ходить
+    capacity: 3,      // сколько башен могут перейти, прежде чем мост «износится»
+    baseTexture: 'tower', // запасные картинки (потом bridge_base)
+    texture: 'tower',
+    color: 0x95a5a6,
   },
 };
 
 const ENEMY_HIT_COLOR = 0xffffff; // вспышка врага при попадании
 const ENEMY_HP = 3;               // базовое здоровье врага по умолчанию
+const ENEMY_HP_SCALE = 0.12;      // прирост HP врагов за волну (множитель)
 
-// Типы врагов. hp — базовое здоровье, speed — клеток/сек,
-// color — цвет, reward — золото за убийство, size — размер от клетки.
+// Типы врагов. hp — базовое здоровье, speed — клеток/сек, color — цвет,
+// reward — золото за убийство, size — размер от клетки.
+// damageMultiplier — множитель получаемого урона (броня).
+// shield / shieldColor — отдельный запас щита (щитоносец).
+// splitInto / splitCount — на кого распадается при смерти.
+// livesDamage — сколько жизней снимает, если дойдёт до конца.
 const ENEMY_TYPES = {
-  normal: { hp: 3,  speed: 2.0, color: 0xe74c3c, reward: 10,  size: 0.60 },
-  fast:   { hp: 2,  speed: 4.0, color: 0xf39c12, reward: 8,   size: 0.45 },
-  tank:   { hp: 12, speed: 1.2, color: 0x8e44ad, reward: 30,  size: 0.72 },
-  boss:   { hp: 50, speed: 0.9, color: 0x2c3e50, reward: 120, size: 0.85 },
+  normal: { hp: 3, speed: 2.0, color: 0xe74c3c, reward: 8, size: 0.60 },
+  fast: { hp: 2, speed: 4.2, color: 0xf39c12, reward: 6, size: 0.45 },
+  armored: {
+    hp: 8,
+    speed: 1.5,
+    color: 0x7f8c8d,
+    reward: 14,
+    size: 0.62,
+    damageMultiplier: 0.6,
+  },
+  tank: { hp: 26, speed: 0.9, color: 0x8e44ad, reward: 30, size: 0.80 },
+  splitter: {
+    hp: 12,
+    speed: 1.6,
+    color: 0x27ae60,
+    reward: 15,
+    size: 0.70,
+    splitInto: 'small',
+    splitCount: 2,
+  },
+  small: { hp: 2, speed: 3.2, color: 0x2ecc71, reward: 3, size: 0.34 },
+  shielded: {
+    hp: 15,
+    speed: 1.4,
+    color: 0x2980b9,
+    reward: 25,
+    size: 0.70,
+    shield: 12,
+    shieldColor: 0x66ccff,
+  },
+  boss: { hp: 160, speed: 0.8, color: 0x2c3e50, reward: 220, size: 1.15, livesDamage: 3 },
 };
 
 // ----------------------------- Волны -----------------------------
-const WAVE_START_ENEMIES = 5;     // сколько врагов в 1-й волне
-const WAVE_HP_GROWTH = 2;         // прирост HP врагов за каждую волну
-const SPAWN_INTERVAL = 1000;      // задержка между спавном врагов, мс (1 секунда)
+const SPAWN_INTERVAL = 1000;      // базовая задержка между спавном, мс
+const SPAWN_INTERVAL_MIN = 300;   // минимальная задержка (дальше волны — быстрее)
 const WAVE_CLEAR_BONUS = 25;      // бонус золота за зачистку волны
+
+// Состав волн 1–20 по документу. Дальше — процедурно (buildEndlessWave).
+const WAVE_TABLE = [
+  { normal: 10 }, // 1
+  { normal: 15 }, // 2
+  { normal: 20 }, // 3
+  { normal: 15, fast: 5 }, // 4
+  { normal: 20, fast: 8 }, // 5
+  { normal: 15, fast: 15 }, // 6
+  { normal: 20, armored: 5 }, // 7
+  { normal: 15, fast: 10, armored: 8 }, // 8
+  { normal: 25, armored: 10 }, // 9
+  { normal: 20, armored: 5, tank: 3 }, // 10
+  { normal: 20, fast: 10, tank: 5 }, // 11
+  { normal: 25, armored: 8, tank: 5 }, // 12
+  { normal: 20, splitter: 5 }, // 13
+  { fast: 15, splitter: 8, armored: 5 }, // 14
+  { normal: 25, fast: 10, splitter: 8, tank: 3 }, // 15
+  { normal: 20, shielded: 8, armored: 5 }, // 16
+  { fast: 15, shielded: 10, tank: 5 }, // 17
+  { normal: 20, armored: 10, shielded: 8, splitter: 5 }, // 18
+  { fast: 10, armored: 8, tank: 5, shielded: 8, splitter: 5 }, // 19
+  { boss: 1, normal: 20, fast: 10, armored: 5 }, // 20
+];
 
 const PROJECTILE_COLOR = 0xf1c40f; // цвет снаряда (жёлтый)
 const PROJECTILE_SPEED = 10;       // скорость снаряда: клеток в секунду
@@ -95,16 +171,20 @@ const PATH_WAYPOINTS = [
 // ------------------------------ Враг ------------------------------
 // Враг — красный квадрат, который плавно едет по клеткам маршрута.
 class Enemy extends Phaser.GameObjects.Rectangle {
-  constructor(scene, pathCells, typeKey = 'normal', hp = ENEMY_HP) {
+  constructor(scene, pathCells, typeKey = 'normal', hp = ENEMY_HP, shield = 0) {
     const type = ENEMY_TYPES[typeKey] || ENEMY_TYPES.normal;
-    super(scene, 0, 0, 1, 1, type.color);
+    const fillColor = shield > 0 ? type.shieldColor || 0x66ccff : type.color;
+    super(scene, 0, 0, 1, 1, fillColor);
 
-    this.typeKey = typeKey;      // ключ типа ("normal", "fast", "tank", "boss")
+    this.typeKey = typeKey;      // ключ типа
     this.config = type;          // настройки типа
-    this.baseColor = type.color; // цвет для возврата после вспышки
+    this.baseColor = type.color; // обычный цвет
+    this.fillColor = fillColor;  // текущая заливка (со щитом — другая)
     this.speed = type.speed;     // скорость: клеток в секунду
     this.reward = type.reward;   // золото за убийство
     this.sizeFactor = type.size; // размер относительно клетки
+    this.damageMultiplier = type.damageMultiplier || 1; // броня (множитель урона)
+    this.shield = shield;        // запас щита (снимается первым)
 
     this.pathCells = pathCells; // полный список клеток маршрута ({row, col})
     this.segment = 0;           // индекс текущего отрезка пути
@@ -114,7 +194,7 @@ class Enemy extends Phaser.GameObjects.Rectangle {
     this.isDead = false;        // мёртв/исчезает — не двигается и не цель для башен
 
     scene.add.existing(this);   // добавляем объект в сцену
-    this.setDepth(3);           // враги поверх башен
+    this.setDepth(0.6);         // враг ходит по дороге — ниже моста (мост 0.9)
   }
 
   // Движение по маршруту. delta — мс, геометрия сетки передаётся из сцены,
@@ -154,18 +234,40 @@ class Enemy extends Phaser.GameObjects.Rectangle {
     this.y = Phaser.Math.Linear(ay, by, this.progress);
   }
 
-  // Получаем урон. При 0 HP враг умирает.
+  // Короткая белая вспышка при попадании.
+  flash() {
+    this.setFillStyle(ENEMY_HIT_COLOR);
+    this.scene.time.delayedCall(80, () => {
+      if (this.active && !this.isDead) this.setFillStyle(this.fillColor);
+    });
+  }
+
+  // Получаем урон. Сначала снимается щит, потом здоровье.
+  // Броня (damageMultiplier) уменьшает входящий урон.
   takeDamage(amount) {
     if (this.isDead) return;
 
-    this.hp -= amount;
+    const damage = amount * this.damageMultiplier;
 
-    // Короткая белая вспышка при попадании.
+    if (this.shield > 0) {
+      this.shield -= damage;
+
+      if (this.shield <= 0) {
+        // Щит сломан: остаток урона уходит в здоровье.
+        this.hp += this.shield;
+        this.shield = 0;
+        this.fillColor = this.baseColor;
+        this.setFillStyle(this.fillColor);
+      } else {
+        this.flash();
+        return;
+      }
+    } else {
+      this.hp -= damage;
+    }
+
     if (this.hp > 0) {
-      this.setFillStyle(ENEMY_HIT_COLOR);
-      this.scene.time.delayedCall(80, () => {
-        if (this.active && !this.isDead) this.setFillStyle(this.baseColor);
-      });
+      this.flash();
       return;
     }
 
@@ -176,6 +278,9 @@ class Enemy extends Phaser.GameObjects.Rectangle {
   die() {
     this.isDead = true;
     this.scene.onEnemyKilled(this); // сообщаем сцене (награда золотом)
+
+    // Разделяющийся враг оставляет после себя мелких.
+    if (this.config.splitInto) this.scene.onEnemySplit(this);
 
     this.scene.tweens.add({
       targets: this,
@@ -279,8 +384,19 @@ class Tower {
     this.cooldown = 0;               // время до следующего выстрела, сек
     this.totalSpent = type.cost;     // сколько золота вложено (для продажи)
     this.aimAngle = 0;               // куда направлена пушка (радианы)
+    this.baseAngle = 0;              // поворот корпуса (радианы)
     this.sprite = null;              // картинка пушки (вращается)
     this.baseSprite = null;          // картинка корпуса (стоит на месте)
+
+    // Передвижение при переносе.
+    this.path = [];                  // маршрут ходьбы (точки в клетках)
+    this.isMoving = false;           // идёт ли башня пешком
+    this.lastCellKey = null;         // для учёта перехода через мост
+
+    // Мост: ресурс переходов.
+    this.capacity = type.capacity || 0;
+    this.used = 0;
+    this.usedUp = false;
   }
 
   // Цена следующего улучшения (зависит от типа и уровня).
@@ -293,9 +409,9 @@ class Tower {
     return Math.floor(this.totalSpent * TOWER_SELL_RATIO);
   }
 
-  // Можно ли ещё улучшать башню.
+  // Можно ли ещё улучшать башню (мост не улучшается).
   canUpgrade() {
-    return this.level < TOWER_MAX_LEVEL;
+    return !this.config.isBridge && this.level < TOWER_MAX_LEVEL;
   }
 
   // Улучшение башни: +радиус, +скорость, +урон.
@@ -328,11 +444,12 @@ class Tower {
       this.aimAngle = Math.atan2(target.y - pos.y, target.x - pos.x);
     }
 
-    // Стреляем, только если есть цель и башня перезарядилась.
-    if (!target || this.cooldown > 0) return;
+    // Стреляем, только если башня умеет стрелять, есть цель и она перезарядилась.
+    if (this.fireRate <= 0 || !target || this.cooldown > 0) return;
 
     // Выстрел из дула: чуть впереди центра по направлению пушки.
-    const muzzleDistance = this.config.footprint * 0.5 * cellSize;
+    const weaponScale = this.config.weaponScale || 1;
+    const muzzleDistance = this.config.footprint * weaponScale * 0.5 * cellSize;
     const muzzle = {
       x: pos.x + Math.cos(this.aimAngle) * muzzleDistance,
       y: pos.y + Math.sin(this.aimAngle) * muzzleDistance,
@@ -402,6 +519,11 @@ class GameScene extends Phaser.Scene {
     // Разворачиваем мини-апп на весь экран Telegram и определяем игрока.
     this.initTelegram();
 
+    // Данные игрока и роль (creator / tester / player) — роль читается из Firebase.
+    this.playerInfo = this.getPlayerInfo();
+    this.playerRole = 'player';
+    this.isBeta = false;
+
     // Состояние игрока (экономика и жизни).
     this.gold = START_GOLD;
     this.lives = START_LIVES;
@@ -416,8 +538,14 @@ class GameScene extends Phaser.Scene {
 
     // Выбранная башня (для меню улучшения/продажи).
     this.selectedTower = null;
+    // Башня, для которой включён режим переноса (кнопка «Переместить»).
+    this.movingTower = null;
+    // Мосты, исчерпавшие лимит (ломаются в конце кадра).
+    this.brokenBridges = [];
     // Тип башни, который строим по клику (переключается панелью внизу).
     this.selectedTowerType = 'gunner';
+    // Угол поворота призрака при постройке (крутится до установки).
+    this.buildAngle = 0;
 
     // Кэш замеров картинок: где у них непрозрачная часть и её центр.
     // Заполняется лениво (при первом использовании текстуры).
@@ -443,6 +571,7 @@ class GameScene extends Phaser.Scene {
     // Слои по глубине: сетка (0) → спрайты башен (1) → точки уровня (2) →
     // враги (3) → снаряды (4) → UI (90+).
     this.gridGraphics = this.add.graphics().setDepth(0);
+    this.rangeGraphics = this.add.graphics().setDepth(0.5); // кольцо радиуса атаки
     this.towersGraphics = this.add.graphics().setDepth(2);
 
     // Геометрия сетки (пересчитывается в layout()).
@@ -460,6 +589,43 @@ class GameScene extends Phaser.Scene {
     this.scale.off('resize', this.layout, this);
     this.scale.on('resize', this.layout, this);
     this.updateUI();
+
+    // Подгружаем роль игрока (лёгкий запрос, без Firebase SDK).
+    this.loadPlayerRole();
+
+    // ПКМ не должна открывать контекстное меню браузера.
+    if (this.input.mouse) this.input.mouse.disableContextMenu();
+
+    // Shift — режим «ставить подряд»: после постройки выбор не снимается.
+    this.shiftKey = this.input.keyboard
+      ? this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SHIFT)
+      : null;
+
+    // Горячие клавиши 1..N — выбор башни; повторное нажатие снимает выбор.
+    if (this.input.keyboard) {
+      this.input.keyboard.on('keydown', (event) => {
+        if (this.isGameOver) return;
+
+        // Клавиша X (в русской раскладке — Ч) продаёт выбранную башню.
+        const key = (event.key || '').toLowerCase();
+        if (key === 'x' || key === 'ч') {
+          if (this.selectedTower) this.sellSelectedTower();
+          return;
+        }
+
+        // Клавиша R (рус. К) поворачивает призрак будущей башни.
+        if (key === 'r' || key === 'к') {
+          if (this.selectedTowerType) this.rotateBuild();
+          return;
+        }
+
+        const index = parseInt(event.key, 10);
+        if (!index) return;
+        const keys = Object.keys(TOWER_TYPES);
+        const typeKey = keys[index - 1];
+        if (typeKey) this.selectTowerType(typeKey);
+      });
+    }
 
     // Управление указателем: клик — постройка/меню, перетаскивание — перенос башни.
     this.input.on('pointerdown', this.handlePointerDown, this);
@@ -571,7 +737,7 @@ class GameScene extends Phaser.Scene {
     this.towerMenu = this.add.container(0, 0).setDepth(102).setVisible(false);
 
     this.towerMenuBg = this.add
-      .rectangle(0, 0, 250, 165, 0x000000, 0.9)
+      .rectangle(0, 0, 270, 200, 0x000000, 0.9)
       .setStrokeStyle(2, TOWER_COLOR)
       .setInteractive();
     // Клик по фону меню не должен «проваливаться» в игровое поле.
@@ -580,9 +746,9 @@ class GameScene extends Phaser.Scene {
     });
 
     this.towerMenuTitle = this.add
-      .text(0, -52, '', {
+      .text(0, -72, '', {
         fontFamily: 'Arial, sans-serif',
-        fontSize: '17px',
+        fontSize: '16px',
         color: '#ffffff',
         fontStyle: 'bold',
         align: 'center',
@@ -591,7 +757,7 @@ class GameScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     this.towerMenuUpgrade = this.add
-      .text(0, 10, '', {
+      .text(0, -20, '', {
         fontFamily: 'Arial, sans-serif',
         fontSize: '18px',
         color: '#2ecc71',
@@ -599,8 +765,17 @@ class GameScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
 
+    this.towerMenuMove = this.add
+      .text(0, 22, '⤢ Переместить', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '18px',
+        color: '#f1c40f',
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+
     this.towerMenuSell = this.add
-      .text(0, 52, '', {
+      .text(0, 62, '', {
         fontFamily: 'Arial, sans-serif',
         fontSize: '18px',
         color: '#e74c3c',
@@ -612,12 +787,18 @@ class GameScene extends Phaser.Scene {
       this.towerMenuBg,
       this.towerMenuTitle,
       this.towerMenuUpgrade,
+      this.towerMenuMove,
       this.towerMenuSell,
     ]);
 
     this.towerMenuUpgrade.on('pointerdown', (pointer, localX, localY, event) => {
       if (event && event.stopPropagation) event.stopPropagation();
       this.upgradeSelectedTower();
+    });
+
+    this.towerMenuMove.on('pointerdown', (pointer, localX, localY, event) => {
+      if (event && event.stopPropagation) event.stopPropagation();
+      this.moveSelectedTower();
     });
 
     this.towerMenuSell.on('pointerdown', (pointer, localX, localY, event) => {
@@ -640,9 +821,43 @@ class GameScene extends Phaser.Scene {
 
   // Обновляем текст панели при изменении волны/жизней/золота.
   updateUI() {
+    const nick = this.playerInfo ? this.playerInfo.nick : 'Игрок';
+    const prefix = this.roleLabel(this.playerRole);
+    const betaMark = this.isBeta ? ' · бета' : '';
+    const nameLine = prefix ? `${nick} · ${prefix}${betaMark}` : `${nick}${betaMark}`;
+
     this.uiText.setText(
-      `Волна: ${this.currentWave}\nЖизни: ${this.lives}\nЗолото: ${this.gold}`
+      `${nameLine}\nВолна: ${this.currentWave}\nЖизни: ${this.lives}\nЗолото: ${this.gold}`
     );
+  }
+
+  // Подпись роли.
+  roleLabel(role) {
+    if (role === 'creator') return 'создатель';
+    if (role === 'tester') return 'тестер';
+    return '';
+  }
+
+  // Читаем роль игрока из Firestore (REST, без загрузки Firebase SDK).
+  async loadPlayerRole() {
+    const id = this.playerInfo ? this.playerInfo.id : null;
+    if (!id || id === 'test_player') return;
+
+    try {
+      const url =
+        `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}` +
+        `/databases/(default)/documents/users/${id}?key=${FIREBASE_API_KEY}`;
+      const response = await fetch(url);
+      if (!response.ok) return;
+
+      const data = await response.json();
+      const role = (data.fields && data.fields.role && data.fields.role.stringValue) || 'player';
+      this.playerRole = role;
+      this.isBeta = role === 'creator' || role === 'tester';
+      this.updateUI();
+    } catch (error) {
+      console.warn('Не удалось загрузить роль:', error);
+    }
   }
 
   // Показываем всплывающее сообщение и плавно гасим его.
@@ -668,6 +883,7 @@ class GameScene extends Phaser.Scene {
     this.closeTowerMenu(); // прячем меню башни, если оно было открыто
     this.buildMenu.setVisible(false); // прячем панель постройки
     this.ghost.setVisible(false); // прячем призрак башни
+    this.clearRangeRing(); // убираем кольцо радиуса
 
     // Небольшой эффект появления.
     this.gameOverText.setScale(0.5);
@@ -692,12 +908,14 @@ class GameScene extends Phaser.Scene {
     this.refreshTowerMenu();
     this.positionTowerMenu();
     this.towerMenu.setVisible(true);
+    this.showRangeRingForTower(tower);
   }
 
   // Закрыть меню башни.
   closeTowerMenu() {
     this.selectedTower = null;
     if (this.towerMenu) this.towerMenu.setVisible(false);
+    this.clearRangeRing();
   }
 
   // Обновить тексты меню по текущей башне.
@@ -705,6 +923,18 @@ class GameScene extends Phaser.Scene {
     const tower = this.selectedTower;
     if (!tower) return;
 
+    // У моста нет улучшений — показываем остаток переходов.
+    if (tower.config.isBridge) {
+      const left = Math.max(0, tower.capacity - tower.used);
+      this.towerMenuTitle.setText(`Мост · переходов осталось: ${left}`);
+      this.towerMenuUpgrade.setText('').setVisible(false);
+      this.towerMenuMove.setVisible(false); // мост не переносится
+      this.towerMenuSell.setText(`✖ Продать (+${tower.getSellValue()})`);
+      return;
+    }
+
+    this.towerMenuUpgrade.setVisible(true);
+    this.towerMenuMove.setVisible(true);
     this.towerMenuTitle.setText(
       `${tower.config.name} · ур. ${tower.level}\n` +
         `Радиус ${tower.range.toFixed(1)} · ${tower.fireRate.toFixed(1)}/с · точн. ${Math.round(
@@ -718,7 +948,7 @@ class GameScene extends Phaser.Scene {
       this.towerMenuUpgrade.setText('МАКС. УРОВЕНЬ').setColor('#7f8c8d');
     }
 
-    this.towerMenuSell.setText(`Продать (+${tower.getSellValue()})`);
+    this.towerMenuSell.setText(`✖ Продать (+${tower.getSellValue()})`);
   }
 
   // Расположить меню рядом с башней, не выпуская его за края экрана.
@@ -729,8 +959,8 @@ class GameScene extends Phaser.Scene {
     const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
     const width = this.scale.width;
     const height = this.scale.height;
-    const halfW = 125; // половина ширины фона меню (250 / 2)
-    const halfH = 82;  // половина высоты фона меню (165 / 2)
+    const halfW = 135; // половина ширины фона меню (270 / 2)
+    const halfH = 100; // половина высоты фона меню (200 / 2)
     const margin = 8;
 
     let x = pos.x;
@@ -742,6 +972,32 @@ class GameScene extends Phaser.Scene {
     x = Phaser.Math.Clamp(x, halfW + margin, width - halfW - margin);
     y = Phaser.Math.Clamp(y, halfH + margin, height - halfH - margin);
     this.towerMenu.setPosition(x, y);
+  }
+
+  // Включаем режим переноса для выбранной башни.
+  moveSelectedTower() {
+    const tower = this.selectedTower;
+    if (!tower || tower.config.isBridge) return; // мост не переносится
+
+    this.movingTower = tower;
+    this.selectedTowerType = null;
+    this.refreshBuildMenu();
+    this.closeTowerMenu();
+    if (this.ghost) this.ghost.setVisible(false);
+    this.showRangeRingForTower(tower);
+    this.showMessage('Нажми на новое место для башни');
+  }
+
+  // Повернуть призрак будущей башни на 90° (до постройки).
+  rotateBuild() {
+    this.buildAngle = (this.buildAngle + Math.PI / 2) % (Math.PI * 2);
+    this.applyGhostAngle();
+  }
+
+  // Применяем угол постройки к призраку.
+  applyGhostAngle() {
+    if (this.ghostBase) this.ghostBase.setRotation(this.buildAngle);
+    if (this.ghostWeapon) this.ghostWeapon.setRotation(this.buildAngle);
   }
 
   // Улучшить выбранную башню за золото.
@@ -760,6 +1016,7 @@ class GameScene extends Phaser.Scene {
     this.refreshTowerSprite(tower); // меняем картинку на спрайт нового уровня
     this.drawTowers();
     this.refreshTowerMenu();
+    this.showRangeRingForTower(tower); // радиус вырос — обновляем кольцо
     this.updateUI();
   }
 
@@ -782,12 +1039,13 @@ class GameScene extends Phaser.Scene {
   createBuildMenu() {
     this.buildMenu = this.add.container(0, 0).setDepth(100);
     this.buildButtons = {};
+    this.buildButtonWidth = 105;
+    this.buildGap = 8;
 
-    const keys = Object.keys(TOWER_TYPES);
-    const buttonWidth = 150;
-    const gap = 12;
+    const buttonWidth = this.buildButtonWidth;
+    const gap = this.buildGap;
 
-    keys.forEach((key, index) => {
+    Object.keys(TOWER_TYPES).forEach((key, index) => {
       const type = TOWER_TYPES[key];
       const button = this.add.container(index * (buttonWidth + gap), 0);
 
@@ -801,13 +1059,19 @@ class GameScene extends Phaser.Scene {
         this.selectTowerType(key);
       });
 
-      const iconKey =
-        this.getWeaponTextureKey(key, 1) || this.getBaseTextureKey(key) || type.texture;
-      const icon = this.add.image(0, -14, iconKey).setDisplaySize(40, 40);
+      // Иконка = корпус + пушка 1-го уровня.
+      const icon = this.add.container(0, -14);
+      const baseKey = this.getBaseTextureKey(key) || type.texture;
+      icon.add(this.add.image(0, 0, baseKey).setDisplaySize(34, 34));
+      const weaponKey = this.getWeaponTextureKey(key, 1);
+      if (weaponKey) {
+        icon.add(this.add.image(0, 0, weaponKey).setDisplaySize(34, 34));
+      }
+
       const label = this.add
         .text(0, 26, `${type.name} · ${type.cost}`, {
           fontFamily: 'Arial, sans-serif',
-          fontSize: '15px',
+          fontSize: '13px',
           color: '#ffffff',
         })
         .setOrigin(0.5);
@@ -821,10 +1085,20 @@ class GameScene extends Phaser.Scene {
     this.refreshBuildMenu();
   }
 
-  // Выбрать тип башни для постройки.
+  // Выбрать тип башни для постройки. Повторный клик по выбранной — снять выбор.
   selectTowerType(key) {
-    this.selectedTowerType = key;
+    this.selectedTowerType = this.selectedTowerType === key ? null : key;
+    this.buildAngle = 0; // новый выбор — угол сбрасываем
     this.refreshBuildMenu();
+    this.applyGhostAngle();
+    if (!this.selectedTowerType) this.cancelPlacement();
+  }
+
+  // Снять выбор башни (тогда клик по полю ничего не строит).
+  clearTowerSelection() {
+    this.selectedTowerType = null;
+    this.refreshBuildMenu();
+    this.cancelPlacement();
   }
 
   // Подсветить выбранную кнопку панели.
@@ -843,8 +1117,9 @@ class GameScene extends Phaser.Scene {
   // Расположить кнопки панели постройки внизу экрана.
   layoutBuildMenu(width, height) {
     const keys = Object.keys(this.buildButtons);
-    const buttonWidth = 150;
-    const gap = 12;
+    const buttonWidth = this.buildButtonWidth;
+    const gap = this.buildGap;
+
     const totalWidth = keys.length * buttonWidth + (keys.length - 1) * gap;
     const startX = width / 2 - totalWidth / 2 + buttonWidth / 2;
     const y = height - 60;
@@ -861,11 +1136,31 @@ class GameScene extends Phaser.Scene {
     this.updateUI();
   }
 
-  // Враг дошёл до конца дороги — отнимаем жизнь, при 0 запускаем Game Over.
-  onEnemyReachedEnd() {
+  // Разделяющийся враг умер — выпускаем мелких в той же точке пути.
+  onEnemySplit(parent) {
+    const typeKey = parent.config.splitInto;
+    if (!typeKey) return;
+
+    const base = ENEMY_TYPES[typeKey];
+    const scale = this.enemyHpScale(this.currentWave);
+    const count = parent.config.splitCount || 2;
+
+    for (let i = 0; i < count; i++) {
+      const hp = Math.round(base.hp * scale);
+      const child = new Enemy(this, this.pathCells, typeKey, hp, 0);
+      // Ставим детей туда же, где погиб родитель (чуть вразброс).
+      child.segment = parent.segment;
+      child.progress = Math.max(0, parent.progress - i * 0.08);
+      this.enemies.push(child);
+    }
+  }
+
+  // Враг дошёл до конца дороги — отнимаем жизни, при 0 запускаем Game Over.
+  onEnemyReachedEnd(enemy) {
     if (this.isGameOver) return;
 
-    this.lives = Math.max(0, this.lives - 1);
+    const damage = (enemy && enemy.config.livesDamage) || 1;
+    this.lives = Math.max(0, this.lives - damage);
     this.updateUI();
     console.log(`Враг дошёл до конца дороги! Осталось жизней: ${this.lives}`);
 
@@ -915,8 +1210,7 @@ class GameScene extends Phaser.Scene {
   // документ — id игрока в Telegram (у каждого свой личный рекорд).
   // Записываем только если новый результат лучше прошлого.
   async saveRecord() {
-    const player = this.getPlayerInfo();
-    const reference = doc(db, 'leaderboard', player.id);
+    const player = this.playerInfo || this.getPlayerInfo();
     const newRecord = {
       nick: player.nick,
       wave: this.currentWave,
@@ -925,6 +1219,13 @@ class GameScene extends Phaser.Scene {
     };
 
     try {
+      // Подключаем Firebase только сейчас — при первом сохранении.
+      const { db } = await import('./firebase-config.js');
+      const { doc, getDoc, setDoc } = await import(
+        'https://www.gstatic.com/firebasejs/12.19.0/firebase-firestore.js'
+      );
+
+      const reference = doc(db, 'leaderboard', player.id);
       const snapshot = await getDoc(reference);
       const previous = snapshot.exists() ? snapshot.data() : null;
 
@@ -1025,8 +1326,11 @@ class GameScene extends Phaser.Scene {
     this.restartButton.setStyle({ fontSize: `${Math.round(Math.min(width, height) * 0.05)}px` });
     this.restartButton.setVisible(this.isGameOver);
 
-    // Если меню башни открыто — пересчитываем позицию под новый размер.
-    if (this.selectedTower) this.positionTowerMenu();
+    // Если меню башни открыто — пересчитываем позицию и кольцо под новый размер.
+    if (this.selectedTower) {
+      this.positionTowerMenu();
+      this.showRangeRingForTower(this.selectedTower);
+    }
 
     // Панель постройки башен.
     this.layoutBuildMenu(width, height);
@@ -1075,18 +1379,26 @@ class GameScene extends Phaser.Scene {
   createTowerSprite(tower) {
     const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
 
-    // Корпус (стоит на месте).
+    // Корпус (стоит на месте). Мост рисуем выше обычных башен (1.5),
+    // чтобы проходящий «юнит» оказывался под мостом, а его пушка (2) — над.
     const baseKey = this.getBaseTextureKey(tower.typeKey);
     if (baseKey) {
-      tower.baseSprite = this.add.image(pos.x, pos.y, baseKey).setDepth(1);
+      const baseDepth = tower.config.isBridge ? 0.9 : 1;
+      tower.baseSprite = this.add.image(pos.x, pos.y, baseKey).setDepth(baseDepth);
       this.applyTowerVisual(tower.baseSprite, baseKey, tower.config.footprint);
+      tower.baseSprite.setRotation(tower.baseAngle);
     }
 
     // Пушка (вращается к врагу).
     const weaponKey = this.getWeaponTextureKey(tower.typeKey, tower.level);
     if (weaponKey) {
       tower.sprite = this.add.image(pos.x, pos.y, weaponKey).setDepth(2);
-      this.applyTowerVisual(tower.sprite, weaponKey, tower.config.footprint);
+      this.applyTowerVisual(
+        tower.sprite,
+        weaponKey,
+        tower.config.footprint,
+        tower.config.weaponScale
+      );
     }
   }
 
@@ -1109,7 +1421,12 @@ class GameScene extends Phaser.Scene {
       tower.sprite.setTexture(weaponKey);
     }
 
-    this.applyTowerVisual(tower.sprite, weaponKey, tower.config.footprint);
+    this.applyTowerVisual(
+      tower.sprite,
+      weaponKey,
+      tower.config.footprint,
+      tower.config.weaponScale
+    );
     tower.sprite.setPosition(pos.x, pos.y);
     tower.sprite.setRotation(tower.aimAngle);
   }
@@ -1136,9 +1453,9 @@ class GameScene extends Phaser.Scene {
 
   // Вписываем картинку башни в её footprint и ставим точку опоры в центр
   // непрозрачной части — тогда спрайт встаёт ровно, как бы он ни был нарисован.
-  applyTowerVisual(image, textureKey, footprint) {
+  applyTowerVisual(image, textureKey, footprint, sizeFactor = 1) {
     const visual = this.getVisual(textureKey);
-    const contentPx = this.cellSize * footprint; // нужный размер самого рисунка
+    const contentPx = this.cellSize * footprint * sizeFactor; // нужный размер рисунка
 
     if (visual) {
       image.setOrigin(visual.originX, visual.originY);
@@ -1212,12 +1529,18 @@ class GameScene extends Phaser.Scene {
       if (tower.baseSprite && baseKey) {
         tower.baseSprite.setPosition(pos.x, pos.y);
         this.applyTowerVisual(tower.baseSprite, baseKey, tower.config.footprint);
+        tower.baseSprite.setRotation(tower.baseAngle);
       }
 
       const weaponKey = this.getWeaponTextureKey(tower.typeKey, tower.level);
       if (tower.sprite && weaponKey) {
         tower.sprite.setPosition(pos.x, pos.y);
-        this.applyTowerVisual(tower.sprite, weaponKey, tower.config.footprint);
+        this.applyTowerVisual(
+          tower.sprite,
+          weaponKey,
+          tower.config.footprint,
+          tower.config.weaponScale
+        );
       }
     }
   }
@@ -1234,29 +1557,250 @@ class GameScene extends Phaser.Scene {
     }
   }
 
+  // Ставим корпус и пушку башни в её текущую точку.
+  positionTowerSprites(tower) {
+    const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+    if (tower.baseSprite) {
+      tower.baseSprite.setPosition(pos.x, pos.y);
+      tower.baseSprite.setRotation(tower.baseAngle);
+    }
+    if (tower.sprite) tower.sprite.setPosition(pos.x, pos.y);
+  }
+
+  // Показать кольцо радиуса атаки (rangeCells — радиус в клетках).
+  showRangeRing(x, y, rangeCells, color) {
+    const g = this.rangeGraphics;
+    g.clear();
+    const radius = rangeCells * this.cellSize;
+    g.fillStyle(color, 0.08);
+    g.fillCircle(x, y, radius);
+    g.lineStyle(3, color, 0.8);
+    g.strokeCircle(x, y, radius);
+  }
+
+  // Кольцо радиуса конкретной башни.
+  showRangeRingForTower(tower) {
+    const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+    this.showRangeRing(pos.x, pos.y, tower.range, tower.config.color);
+  }
+
+  // Убрать кольцо радиуса.
+  clearRangeRing() {
+    if (this.rangeGraphics) this.rangeGraphics.clear();
+  }
+
   // Проверка: является ли клетка дорогой.
   isRoad(row, col) {
     return this.road[row] !== undefined && this.road[row][col] === true;
   }
 
-  // ------------------------- Волны -------------------------
-  // Составляем список типов врагов для волны.
-  // Простые правила: fast появляются со 2-й волны, tank — с 3-й,
-  // босс — в конце каждой 5-й волны.
-  buildWaveComposition(wave) {
-    const count = WAVE_START_ENEMIES + wave * 2;
-    const queue = [];
+  // Мост, стоящий ровно на этой клетке (мосты ставим по центру клетки).
+  bridgeAtCell(col, row) {
+    for (const tower of this.towers) {
+      if (!tower.config.isBridge) continue;
+      if (Math.floor(tower.gx) === col && Math.floor(tower.gy) === row) return tower;
+    }
+    return null;
+  }
 
-    for (let i = 0; i < count; i++) {
-      let typeKey = 'normal';
-      if (wave >= 2 && i % 4 === 1) typeKey = 'fast';
-      if (wave >= 3 && i % 5 === 3) typeKey = 'tank';
-      queue.push(typeKey);
+  // Направление дороги в клетке: 'horizontal', 'vertical', 'corner' или null.
+  roadDirectionAt(col, row) {
+    const horizontal = this.isRoad(row, col - 1) || this.isRoad(row, col + 1);
+    const vertical = this.isRoad(row - 1, col) || this.isRoad(row + 1, col);
+    if (horizontal && vertical) return 'corner';
+    if (horizontal) return 'horizontal';
+    if (vertical) return 'vertical';
+    return null;
+  }
+
+  // Мост всегда ставится ПОПЕРЁК дороги (вдоль — нельзя).
+  bridgeAngleAt(col, row) {
+    return this.roadDirectionAt(col, row) === 'horizontal' ? Math.PI / 2 : 0;
+  }
+
+  // Можно ли пройти по клетке: везде свободно, кроме дороги
+  // (по дороге — только через мост, у которого остался ресурс).
+  isWalkableCell(col, row) {
+    if (col < 0 || col >= GRID_SIZE || row < 0 || row >= GRID_SIZE) return false;
+    if (!this.isRoad(row, col)) return true;
+    const bridge = this.bridgeAtCell(col, row);
+    return !!bridge && !bridge.usedUp;
+  }
+
+  // Поиск пути по клеткам (BFS). Возвращает список точек или null.
+  findPath(startCol, startRow, goalCol, goalRow) {
+    if (startCol === goalCol && startRow === goalRow) return [];
+
+    const key = (c, r) => c + ',' + r;
+    const queue = [[startCol, startRow]];
+    const visited = new Set([key(startCol, startRow)]);
+    const cameFrom = new Map();
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+    while (queue.length) {
+      const [c, r] = queue.shift();
+
+      for (const [dc, dr] of dirs) {
+        const nc = c + dc;
+        const nr = r + dr;
+        const k = key(nc, nr);
+        if (visited.has(k)) continue;
+        if (!this.isWalkableCell(nc, nr)) continue;
+
+        visited.add(k);
+        cameFrom.set(k, [c, r]);
+
+        if (nc === goalCol && nr === goalRow) {
+          const path = [];
+          let cur = [nc, nr];
+          while (!(cur[0] === startCol && cur[1] === startRow)) {
+            path.push({ gx: cur[0] + 0.5, gy: cur[1] + 0.5 });
+            cur = cameFrom.get(key(cur[0], cur[1]));
+          }
+          path.reverse();
+          return path;
+        }
+
+        queue.push([nc, nr]);
+      }
     }
 
-    if (wave % 5 === 0) queue.push('boss');
+    return null; // пути нет
+  }
 
+  // Начинаем перенос: башня пойдёт пешком к указанной точке.
+  startTowerMove(tower, gx, gy) {
+    // Мосты не переносятся.
+    if (tower.config.isBridge) return false;
+
+    if (!this.canPlace(gx, gy, tower.config, tower)) {
+      this.showMessage('Здесь нельзя поставить');
+      return false;
+    }
+
+    const startCol = Math.floor(tower.gx);
+    const startRow = Math.floor(tower.gy);
+    const path = this.findPath(startCol, startRow, Math.floor(gx), Math.floor(gy));
+    if (!path) {
+      this.showMessage('Нет прохода (нужен мост)');
+      return false;
+    }
+
+    path.push({ gx, gy });
+    tower.path = path;
+    tower.isMoving = true;
+    tower.lastCellKey = startCol + ',' + startRow;
+    return true;
+  }
+
+  // Движение башни по маршруту (при переносе).
+  updateTowerMovement(tower, delta) {
+    if (!tower.path || tower.path.length === 0) {
+      tower.isMoving = false;
+      return;
+    }
+
+    const speed = (tower.config.moveSpeed || TOWER_MOVE_SPEED) * (delta / 1000);
+    const point = tower.path[0];
+    const dx = point.gx - tower.gx;
+    const dy = point.gy - tower.gy;
+    const distance = Math.hypot(dx, dy);
+
+    if (distance <= speed || distance < 0.02) {
+      tower.gx = point.gx;
+      tower.gy = point.gy;
+      tower.path.shift();
+      if (tower.path.length === 0) tower.isMoving = false;
+    } else {
+      tower.gx += (dx / distance) * speed;
+      tower.gy += (dy / distance) * speed;
+    }
+
+    // Когда башня покидает клетку моста — расходуем один переход.
+    const col = Math.floor(tower.gx);
+    const row = Math.floor(tower.gy);
+    const cellKey = col + ',' + row;
+    if (tower.lastCellKey && tower.lastCellKey !== cellKey) {
+      const parts = tower.lastCellKey.split(',');
+      const bridge = this.bridgeAtCell(Number(parts[0]), Number(parts[1]));
+      if (bridge) {
+        bridge.used += 1;
+        // Лимит исчерпан — мост сломается (убираем в конце кадра).
+        if (bridge.capacity > 0 && bridge.used >= bridge.capacity && !bridge.usedUp) {
+          bridge.usedUp = true;
+          this.brokenBridges.push(bridge);
+        }
+      }
+    }
+    tower.lastCellKey = cellKey;
+
+    this.positionTowerSprites(tower);
+  }
+
+  // Ломаем мосты, исчерпавшие лимит переходов.
+  breakBridges() {
+    if (this.brokenBridges.length === 0) return;
+
+    for (const bridge of this.brokenBridges) {
+      const index = this.towers.indexOf(bridge);
+      if (index !== -1) this.towers.splice(index, 1);
+      this.destroyTowerSprite(bridge);
+      if (this.selectedTower === bridge) this.closeTowerMenu();
+      if (this.movingTower === bridge) this.movingTower = null;
+    }
+
+    this.brokenBridges = [];
+    this.showMessage('Мост сломался!');
+  }
+
+  // ------------------------- Волны -------------------------
+  // Множитель HP врагов на волне (растёт плавно, без резких скачков).
+  enemyHpScale(wave) {
+    return 1 + (wave - 1) * ENEMY_HP_SCALE;
+  }
+
+  // Составляем очередь типов врагов для волны.
+  buildWaveComposition(wave) {
+    const counts =
+      wave <= WAVE_TABLE.length ? { ...WAVE_TABLE[wave - 1] } : this.buildEndlessWave(wave);
+
+    // Боссов выпускаем в конце, чтобы остальные успели создать давление.
+    const bossCount = counts.boss || 0;
+    delete counts.boss;
+
+    // Смешиваем типы «по кругу», чтобы шли вперемешку.
+    const entries = Object.entries(counts).map(([type, n]) => [type, n]);
+    const queue = [];
+    let added = true;
+    while (added) {
+      added = false;
+      for (const entry of entries) {
+        if (entry[1] > 0) {
+          queue.push(entry[0]);
+          entry[1] -= 1;
+          added = true;
+        }
+      }
+    }
+
+    for (let i = 0; i < bossCount; i++) queue.push('boss');
     return queue;
+  }
+
+  // Волны после 20-й: плавный рост количества и смешивание типов.
+  buildEndlessWave(wave) {
+    const step = wave - 20;
+    const scale = 1 + step * 0.15;
+    const counts = {
+      normal: Math.round(20 * scale),
+      fast: Math.round(12 * scale),
+      armored: Math.round(10 * scale),
+      tank: Math.round(5 * scale),
+      splitter: Math.round(6 * scale),
+      shielded: Math.round(8 * scale),
+    };
+    if (wave % 10 === 0) counts.boss = Math.max(1, Math.floor((wave - 20) / 10) + 1);
+    return counts;
   }
 
   // Запускаем следующую волну (вызывается кликом по кнопке).
@@ -1274,9 +1818,10 @@ class GameScene extends Phaser.Scene {
     this.updateUI();
     this.showMessage(`Волна ${this.currentWave} началась!`);
 
-    // Порционный спавн: один враг раз в секунду.
+    // Порционный спавн: чем дальше волна, тем чаще выходят враги.
+    const interval = Math.max(SPAWN_INTERVAL_MIN, SPAWN_INTERVAL - (this.currentWave - 1) * 30);
     this.waveSpawnTimer = this.time.addEvent({
-      delay: SPAWN_INTERVAL,
+      delay: interval,
       callback: this.spawnWaveEnemy,
       callbackScope: this,
       loop: true,
@@ -1288,10 +1833,14 @@ class GameScene extends Phaser.Scene {
     if (this.isGameOver || this.enemiesLeftToSpawn <= 0) return;
 
     const typeKey = this.waveQueue.shift() || 'normal';
-    // Здоровье = базовое у типа + прирост за номер волны.
-    const hp = ENEMY_TYPES[typeKey].hp + (this.currentWave - 1) * WAVE_HP_GROWTH;
+    const base = ENEMY_TYPES[typeKey];
+    const scale = this.enemyHpScale(this.currentWave);
 
-    const enemy = new Enemy(this, this.pathCells, typeKey, hp);
+    // Здоровье и щит зависят от типа и номера волны.
+    const hp = Math.round(base.hp * scale);
+    const shield = base.shield ? Math.round(base.shield * scale) : 0;
+
+    const enemy = new Enemy(this, this.pathCells, typeKey, hp, shield);
     this.enemies.push(enemy);
     this.enemiesLeftToSpawn -= 1;
 
@@ -1357,68 +1906,157 @@ class GameScene extends Phaser.Scene {
       if (Math.hypot(gx - nearestX, gy - nearestY) < footprint) return false;
     }
 
-    // Другие башни: минимум — 90% от суммы радиусов, чтобы можно было
-    // ставить почти вплотную (с небольшим запасом на точность пальца).
+    return !this.overlapsOtherTower(gx, gy, type, ignoreTower);
+  }
+
+  // Пересекается ли башня с уже стоящими (минимум — 90% суммы радиусов).
+  overlapsOtherTower(gx, gy, type, ignoreTower) {
     for (const tower of this.towers) {
       if (tower === ignoreTower) continue;
       const minDistance = ((type.footprint + tower.config.footprint) / 2) * 0.9;
-      if (Math.hypot(tower.gx - gx, tower.gy - gy) < minDistance) return false;
+      if (Math.hypot(tower.gx - gx, tower.gy - gy) < minDistance) return true;
     }
+    return false;
+  }
 
-    return true;
+  // Можно ли разместить башню (с учётом того, что мост ставится на дорогу).
+  canPlace(gx, gy, type, ignoreTower = null) {
+    if (type.isBridge) {
+      const col = Math.floor(gx);
+      const row = Math.floor(gy);
+      if (!this.isRoad(row, col)) return false; // мост — только на дорогу
+      if (this.bridgeAtCell(col, row)) return false; // одна клетка — один мост
+      const dir = this.roadDirectionAt(col, row);
+      if (!dir || dir === 'corner') return false; // на повороте/перекрёстке нельзя
+      // Призрак должен стоять ПОПЕРЁК дороги.
+      const required = this.bridgeAngleAt(col, row);
+      const mod = (a) => ((a % Math.PI) + Math.PI) % Math.PI;
+      if (Math.abs(mod(this.buildAngle) - mod(required)) > 0.0001) return false;
+      return !this.overlapsOtherTower(gx, gy, type, ignoreTower);
+    }
+    return this.isFreeSpot(gx, gy, type, ignoreTower);
   }
 
   // Обработка нажатия: башня — перетаскивание, пустое место — режим установки.
   handlePointerDown(pointer) {
     if (this.isGameOver) return;
 
-    const { gx, gy } = this.pointerToGrid(pointer);
-
-    // Нажали на башню — начинаем перетаскивание.
-    const existing = this.towerAt(gx, gy);
-    if (existing) {
-      this.startDragging(existing, gx, gy);
+    // ПКМ — полностью отменяем: перенос, установку и выбор башни.
+    if (pointer.rightButtonDown()) {
+      this.cancelAll();
       return;
     }
 
-    // Клик по пустому месту — закрываем меню и включаем установку.
+    const { gx, gy } = this.pointerToGrid(pointer);
+
+    // Нажали на башню.
+    const existing = this.towerAt(gx, gy);
+    if (existing) {
+      // Если для этой башни включён режим переноса — тащим её.
+      if (this.movingTower === existing) {
+        this.startDragging(existing, gx, gy);
+        return;
+      }
+      // Иначе открываем меню. Перенос — только по кнопке «Переместить».
+      this.movingTower = null;
+      this.openTowerMenu(existing);
+      return;
+    }
+
+    // Если включён режим переноса — башня идёт к указанной точке.
+    if (this.movingTower) {
+      const tower = this.movingTower;
+      if (this.startTowerMove(tower, gx, gy)) {
+        this.movingTower = null;
+        this.clearRangeRing();
+      }
+      return;
+    }
+
+    // Клик по пустому месту — закрываем меню.
     this.closeTowerMenu();
     if (gx < 0 || gx > GRID_SIZE || gy < 0 || gy > GRID_SIZE) return;
+
+    // Башня не выбрана — ничего не строим.
+    if (!this.selectedTowerType) return;
 
     this.isPlacing = true;
     this.updateGhost(gx, gy);
   }
 
+  // Отменяем установку башни.
+  cancelPlacement() {
+    this.isPlacing = false;
+    if (this.ghost) this.ghost.setVisible(false);
+    this.clearRangeRing();
+  }
+
+  // Полная отмена (ПКМ): вернуть переносимую башню, снять выбор, закрыть меню.
+  cancelAll() {
+    if (this.dragTower) {
+      const tower = this.dragTower;
+      tower.gx = this.dragStartX;
+      tower.gy = this.dragStartY;
+      this.positionTowerSprites(tower);
+      this.dragTower = null;
+    }
+
+    this.isPlacing = false;
+    this.selectedTowerType = null;
+    this.movingTower = null;
+    this.closeTowerMenu();
+    this.refreshBuildMenu();
+    if (this.ghost) this.ghost.setVisible(false);
+    this.clearRangeRing();
+  }
+
   // Пытаемся построить башню выбранного типа в точке.
   tryBuild(gx, gy) {
+    if (!this.selectedTowerType) return false;
+
     const type = TOWER_TYPES[this.selectedTowerType];
 
-    if (!this.isFreeSpot(gx, gy, type)) {
+    // Мост ставим ровно по центру клетки дороги.
+    if (type.isBridge) {
+      gx = Math.floor(gx) + 0.5;
+      gy = Math.floor(gy) + 0.5;
+    }
+
+    if (!this.canPlace(gx, gy, type)) {
       this.showMessage('Здесь нельзя строить');
-      return;
+      return false;
     }
 
     if (this.gold < type.cost) {
       console.warn('Недостаточно золота для постройки башни!');
       this.showMessage(`Не хватает золота! Нужно ${type.cost}`);
-      return;
+      return false;
     }
 
     this.gold -= type.cost;
     const tower = new Tower(this, gx, gy, this.selectedTowerType);
     this.towers.push(tower);
+    tower.baseAngle = this.buildAngle; // сохраняем поворот, выбранный при призраке
     this.createTowerSprite(tower);
     this.drawTowers(); // перерисовываем индикаторы уровня
     this.updateUI();
+    return true;
   }
 
   // Показываем «призрак» башни под указателем: зелёный — можно, красный — нельзя.
   updateGhost(gx, gy) {
-    const type = TOWER_TYPES[this.selectedTowerType];
+    // Если открыто меню башни — призрак не показываем (кольцо уже от меню).
+    if (this.selectedTower) {
+      this.ghost.setVisible(false);
+      return;
+    }
+
+    const type = this.selectedTowerType ? TOWER_TYPES[this.selectedTowerType] : null;
     const inside = gx >= 0 && gx <= GRID_SIZE && gy >= 0 && gy <= GRID_SIZE;
 
-    if (!inside || this.isGameOver) {
+    if (!type || !inside || this.isGameOver) {
       this.ghost.setVisible(false);
+      this.clearRangeRing();
       return;
     }
 
@@ -1435,7 +2073,7 @@ class GameScene extends Phaser.Scene {
     const weaponKey = this.getWeaponTextureKey(this.selectedTowerType, 1);
     if (weaponKey) {
       this.ghostWeapon.setTexture(weaponKey).setVisible(true);
-      this.applyTowerVisual(this.ghostWeapon, weaponKey, type.footprint);
+      this.applyTowerVisual(this.ghostWeapon, weaponKey, type.footprint, type.weaponScale);
     } else {
       this.ghostWeapon.setVisible(false);
     }
@@ -1443,11 +2081,16 @@ class GameScene extends Phaser.Scene {
     const pos = { x: this.offsetX + gx * this.cellSize, y: this.offsetY + gy * this.cellSize };
     this.ghost.setPosition(pos.x, pos.y);
 
-    const canPlace = this.isFreeSpot(gx, gy, type) && this.gold >= type.cost;
+    this.applyGhostAngle();
+
+    const canPlace = this.canPlace(gx, gy, type) && this.gold >= type.cost;
     const tint = canPlace ? 0x66ff66 : 0xff5555;
     this.ghostBase.setTint(tint);
     this.ghostWeapon.setTint(tint);
     this.ghost.setVisible(true);
+
+    // Кольцо радиуса будущей башни.
+    this.showRangeRing(pos.x, pos.y, type.range, type.color);
   }
 
   // Начинаем перетаскивание башни (запоминаем, за какую точку «схватили»).
@@ -1459,6 +2102,7 @@ class GameScene extends Phaser.Scene {
     this.dragStartX = tower.gx;
     this.dragStartY = tower.gy;
     this.closeTowerMenu();
+    this.showRangeRingForTower(tower);
   }
 
   // Движение указателя: тащим башню или показываем призрак новой.
@@ -1484,12 +2128,19 @@ class GameScene extends Phaser.Scene {
       tower.gx = newGx;
       tower.gy = newGy;
 
-      if (tower.sprite) {
-        const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
-        tower.sprite.setPosition(pos.x, pos.y);
-      }
-      this.drawTowers();
+      this.positionTowerSprites(tower);
+      this.showRangeRingForTower(tower);
       this.ghost.setVisible(false);
+      return;
+    }
+
+    // Режим переноса: кольцо следует за указателем (видно будущее место).
+    if (this.movingTower) {
+      const pos = {
+        x: this.offsetX + gx * this.cellSize,
+        y: this.offsetY + gy * this.cellSize,
+      };
+      this.showRangeRing(pos.x, pos.y, this.movingTower.range, this.movingTower.config.color);
       return;
     }
 
@@ -1503,6 +2154,7 @@ class GameScene extends Phaser.Scene {
     if (this.dragTower) {
       const tower = this.dragTower;
       this.dragTower = null;
+      this.movingTower = null; // перенос завершён
 
       // Если движения не было — это обычный клик, открываем меню башни.
       if (!this.dragMoved) {
@@ -1517,11 +2169,8 @@ class GameScene extends Phaser.Scene {
         this.showMessage('Здесь нельзя поставить');
       }
 
-      if (tower.sprite) {
-        const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
-        tower.sprite.setPosition(pos.x, pos.y);
-      }
-      this.drawTowers();
+      this.positionTowerSprites(tower);
+      this.clearRangeRing();
 
       if (this.selectedTower === tower) this.positionTowerMenu();
       return;
@@ -1531,8 +2180,14 @@ class GameScene extends Phaser.Scene {
     if (this.isPlacing) {
       this.isPlacing = false;
       const { gx, gy } = this.pointerToGrid(pointer);
-      this.tryBuild(gx, gy);
+      const built = this.tryBuild(gx, gy);
       this.ghost.setVisible(false);
+      this.clearRangeRing();
+
+      // Без Shift после постройки выбор снимается.
+      // С зажатым Shift можно ставить башни подряд.
+      const keepPlacing = this.shiftKey && this.shiftKey.isDown;
+      if (built && !keepPlacing) this.clearTowerSelection();
     }
   }
 
@@ -1549,9 +2204,21 @@ class GameScene extends Phaser.Scene {
 
     // Башни: перезарядка, поиск цели, выстрел и наводка пушки.
     for (const tower of this.towers) {
+      // Башню, которую сейчас тащат, не обновляем (она «в руке»).
+      if (tower === this.dragTower) continue;
+
+      // Башня идёт пешком после переноса — двигаем, но не стреляем.
+      if (tower.isMoving) {
+        this.updateTowerMovement(tower, delta);
+        continue;
+      }
+
       tower.update(delta, this.cellSize, this.offsetX, this.offsetY, this.enemies);
       if (tower.sprite) tower.sprite.setRotation(tower.aimAngle);
     }
+
+    // Убираем сломанные мосты.
+    this.breakBridges();
 
     // Снаряды.
     for (const projectile of this.projectiles) {

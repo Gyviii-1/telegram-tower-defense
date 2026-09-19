@@ -1,27 +1,42 @@
 # -*- coding: utf-8 -*-
-"""Telegram-бот игры Tower Defense: таблица лидеров и личный рекорд из Firebase.
+"""Telegram-бот игры Tower Defense: таблица лидеров, роли и личный рекорд.
 
 Работает в двух режимах:
-  * локально:  python bot.py              (токен берётся из config.py)
-  * в облаке (GitHub Actions): токен берётся из переменной окружения BOT_TOKEN
+  * локально:  python bot.py              (токен и ключ из config.py/service-account.json)
+  * в облаке (GitHub Actions): всё берётся из переменных окружения
 
-Бот использует long polling — вебхук, HTTPS и собственный сервер ему не нужны.
+Роли хранятся в Firestore (коллекция "users"). Запись идёт через сервисный
+аккаунт (Firebase Admin), поэтому правила Firestore клиентам писать запрещают.
 """
 
+import base64
+import json
 import os
 import time
 
 import requests
 
+try:
+    import firebase_admin
+    from firebase_admin import credentials, firestore
+
+    FIREBASE_ADMIN_AVAILABLE = True
+except ImportError:
+    FIREBASE_ADMIN_AVAILABLE = False
+
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CREATOR_ID = os.environ.get("CREATOR_ID")
 PROJECT_ID = "telegram-tower-defense"
 API_KEY = "AIzaSyDSIr6tflEu5cYQNXexM0co5hqkDXMVd8Y"
+SA_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "service-account.json")
+SA_B64 = os.environ.get("FIREBASE_SERVICE_ACCOUNT")
 
 # Локальный config.py (не попадает в Git) может переопределить настройки.
 try:
     import config
 
     BOT_TOKEN = BOT_TOKEN or getattr(config, "BOT_TOKEN", None)
+    CREATOR_ID = CREATOR_ID or getattr(config, "CREATOR_ID", None)
     PROJECT_ID = getattr(config, "PROJECT_ID", PROJECT_ID)
     API_KEY = getattr(config, "API_KEY", API_KEY)
 except ImportError:
@@ -44,79 +59,47 @@ MENU_KEYBOARD = {
 }
 
 TOP_LIMIT = 10
+ROLE_LABELS = {"creator": "создатель", "tester": "тестер", "player": ""}
+
+# --------------------------- Firebase Admin ---------------------------
+db = None
 
 
+def init_firebase():
+    """Подключаем Firebase Admin (сервисный аккаунт) — для чтения и записи ролей."""
+    global db
+    if not FIREBASE_ADMIN_AVAILABLE:
+        print("[WARN] firebase-admin не установлен — роли недоступны.")
+        return
+
+    try:
+        if firebase_admin._apps:
+            db = firestore.client()
+            return
+    except Exception:
+        pass
+
+    try:
+        if os.path.exists(SA_PATH):
+            cred = credentials.Certificate(SA_PATH)
+        elif SA_B64:
+            cred = credentials.Certificate(json.loads(base64.b64decode(SA_B64)))
+        else:
+            print("[WARN] Нет ключа сервисного аккаунта — роли недоступны.")
+            return
+
+        firebase_admin.initialize_app(cred)
+        db = firestore.client()
+        print("[INFO] Firebase Admin подключён.")
+    except Exception as error:
+        print("[ERROR] Firebase Admin:", error)
+
+
+# ----------------------------- Telegram API -----------------------------
 def api(method, **params):
-    """Вызов метода Telegram Bot API. Возвращает ответ как словарь Python."""
+    """Вызов метода Telegram Bot API."""
     response = requests.post(f"{API}/{method}", json=params, timeout=40)
     return response.json()
-
-
-def firestore_value(value):
-    """Достаём обычное значение из типизированного поля Firestore."""
-    if not value:
-        return None
-    for key in ("integerValue", "stringValue", "doubleValue", "booleanValue"):
-        if key in value:
-            return value[key]
-    return None
-
-
-def load_leaderboard():
-    """Читаем всю коллекцию leaderboard и сортируем по рекорду (волна, затем золото)."""
-    response = requests.get(FIRESTORE_URL, timeout=30)
-    response.raise_for_status()
-    documents = response.json().get("documents", [])
-
-    records = []
-    for document in documents:
-        doc_id = document["name"].rsplit("/", 1)[-1]  # id игрока — последняя часть пути
-        fields = document.get("fields", {})
-        records.append(
-            {
-                "id": doc_id,
-                "nick": firestore_value(fields.get("nick")) or "Игрок",
-                "wave": int(firestore_value(fields.get("wave")) or 0),
-                "gold": int(firestore_value(fields.get("gold")) or 0),
-                "savedAt": firestore_value(fields.get("savedAt")) or "",
-            }
-        )
-
-    # Сначала больше волн, при равенстве — больше золота.
-    records.sort(key=lambda record: (record["wave"], record["gold"]), reverse=True)
-    return records
-
-
-def format_top(records):
-    """Топ игроков с медалями."""
-    if not records:
-        return "📭 Пока нет рекордов. Сыграй в игру и проиграй — рекорд сохранится!"
-
-    top = records[:TOP_LIMIT]
-    lines = ["🏆 *Топ игроков*", ""]
-    medals = ["🥇", "🥈", "🥉"]
-
-    for index, record in enumerate(top):
-        place = medals[index] if index < len(medals) else f"{index + 1}."
-        lines.append(
-            f"{place} {record['nick']} — Волна {record['wave']}, {record['gold']} золота"
-        )
-
-    return "\n".join(lines)
-
-
-def format_player(player_id, records):
-    """Личный рекорд игрока и его место в общем списке."""
-    for index, record in enumerate(records):
-        if record["id"] == player_id:
-            return (
-                "📊 *Твой рекорд*\n\n"
-                f"Волна: *{record['wave']}*\n"
-                f"Золото: *{record['gold']}*\n"
-                f"Место в топе: *{index + 1}* из {len(records)}"
-            )
-
-    return "🤷 Ты ещё не играл. Пройди игру до Game Over — рекорд сохранится автоматически."
 
 
 def send_message(chat_id, text):
@@ -129,8 +112,103 @@ def send_message(chat_id, text):
     )
 
 
+# ------------------------------- Роли -------------------------------
+def user_nick(message):
+    """Ник игрока из профиля Telegram."""
+    user = message.get("from", {})
+    if user.get("username"):
+        return "@" + user["username"]
+    name = " ".join(filter(None, [user.get("first_name"), user.get("last_name")]))
+    return name or "Игрок"
+
+
+def ensure_user(user_id, nick):
+    """Заводим/обновляем пользователя. Роль по умолчанию — player."""
+    if db is None:
+        return
+    ref = db.collection("users").document(str(user_id))
+    snapshot = ref.get()
+    is_creator = str(user_id) == str(CREATOR_ID)
+
+    if not snapshot.exists:
+        ref.set({
+            "nick": nick,
+            "role": "creator" if is_creator else "player",
+            "updatedAt": firestore.SERVER_TIMESTAMP,
+        })
+    else:
+        update = {"nick": nick, "updatedAt": firestore.SERVER_TIMESTAMP}
+        if is_creator:
+            update["role"] = "creator"
+        ref.set(update, merge=True)
+
+
+def set_role(user_id, role):
+    """Выдать роль пользователю (создаёт документ, если его нет)."""
+    if db is None:
+        return False
+    db.collection("users").document(str(user_id)).set(
+        {"role": role, "updatedAt": firestore.SERVER_TIMESTAMP}, merge=True
+    )
+    return True
+
+
+# --------------------------- Таблица лидеров ---------------------------
+def firestore_value(value):
+    if not value:
+        return None
+    for key in ("integerValue", "stringValue", "doubleValue", "booleanValue"):
+        if key in value:
+            return value[key]
+    return None
+
+
+def load_leaderboard():
+    response = requests.get(FIRESTORE_URL, timeout=30)
+    response.raise_for_status()
+    documents = response.json().get("documents", [])
+
+    records = []
+    for document in documents:
+        doc_id = document["name"].rsplit("/", 1)[-1]
+        fields = document.get("fields", {})
+        records.append({
+            "id": doc_id,
+            "nick": firestore_value(fields.get("nick")) or "Игрок",
+            "wave": int(firestore_value(fields.get("wave")) or 0),
+            "gold": int(firestore_value(fields.get("gold")) or 0),
+        })
+
+    records.sort(key=lambda r: (r["wave"], r["gold"]), reverse=True)
+    return records
+
+
+def format_top(records):
+    if not records:
+        return "📭 Пока нет рекордов. Сыграй в игру и проиграй — рекорд сохранится!"
+
+    lines = ["🏆 *Топ игроков*", ""]
+    medals = ["🥇", "🥈", "🥉"]
+    for index, record in enumerate(records[:TOP_LIMIT]):
+        place = medals[index] if index < len(medals) else f"{index + 1}."
+        lines.append(f"{place} {record['nick']} — Волна {record['wave']}, {record['gold']} золота")
+    return "\n".join(lines)
+
+
+def format_player(player_id, records):
+    for index, record in enumerate(records):
+        if record["id"] == player_id:
+            return (
+                "📊 *Твой рекорд*\n\n"
+                f"Волна: *{record['wave']}*\n"
+                f"Золото: *{record['gold']}*\n"
+                f"Место в топе: *{index + 1}* из {len(records)}"
+            )
+    return "🤷 Ты ещё не играл. Пройди игру до Game Over — рекорд сохранится автоматически."
+
+
+# ------------------------------ Обработка ------------------------------
 def handle_update(update):
-    """Обрабатываем одно входящее сообщение."""
     message = update.get("message")
     if not message:
         return
@@ -139,11 +217,13 @@ def handle_update(update):
     user_id = str(message.get("from", {}).get("id", ""))
     text = (message.get("text") or "").strip()
 
+    ensure_user(user_id, user_nick(message))
+    is_creator = str(user_id) == str(CREATOR_ID)
+
     if text in ("/start", "/help", "/menu"):
         send_message(
             chat_id,
             "👋 Привет! Это бот игры *Tower Defense*.\n\n"
-            "Кнопки внизу:\n"
             f"{TOP_BUTTON} — лучшие игроки\n"
             f"{ME_BUTTON} — твой личный рекорд",
         )
@@ -159,10 +239,46 @@ def handle_update(update):
         except Exception as error:
             print("Ошибка чтения Firebase:", error)
             send_message(chat_id, "⚠️ Не удалось загрузить рекорд. Попробуй позже.")
+    elif text == "/whoami":
+        role = "player"
+        if db is not None:
+            snapshot = db.collection("users").document(user_id).get()
+            if snapshot.exists:
+                role = snapshot.to_dict().get("role", "player")
+        send_message(chat_id, f"Твой ID: `{user_id}`\nРоль: *{role}*")
+    elif text.startswith("/tester") or text.startswith("/untester"):
+        if not is_creator:
+            send_message(chat_id, "⛔ Команда только для создателя.")
+            return
+        parts = text.split()
+        if len(parts) < 2:
+            send_message(chat_id, "Укажи ID: `/tester 123456789`")
+            return
+        target = parts[1].strip()
+        role = "tester" if text.startswith("/tester") else "player"
+        if set_role(target, role):
+            label = ROLE_LABELS.get(role) or "player"
+            send_message(chat_id, f"✅ Пользователю `{target}` выдана роль: *{label}*")
+        else:
+            send_message(chat_id, "⚠️ Роли недоступны (нет ключа сервисного аккаунта).")
+    elif text == "/players":
+        if not is_creator:
+            send_message(chat_id, "⛔ Команда только для создателя.")
+            return
+        if db is None:
+            send_message(chat_id, "⚠️ Роли недоступны.")
+            return
+        lines = ["👥 *Пользователи*", ""]
+        for document in db.collection("users").stream():
+            data = document.to_dict()
+            lines.append(f"`{document.id}` — {data.get('role', 'player')} — {data.get('nick', '')}")
+        send_message(chat_id, "\n".join(lines[:40]))
 
 
 def main():
     print("Бот запущен. Нажми Ctrl+C, чтобы остановить.")
+
+    init_firebase()
 
     me = api("getMe")
     if not me.get("ok"):
@@ -170,7 +286,6 @@ def main():
         return
     print("Бот:", me["result"]["username"])
 
-    # На всякий случай отключаем вебхук, чтобы long polling точно работал.
     api("deleteWebhook", drop_pending_updates=False)
 
     offset = 0

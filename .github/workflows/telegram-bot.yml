@@ -27,8 +27,15 @@ jobs:
       - name: Install dependencies
         run: pip install -r bot/requirements.txt
 
+      - name: Restore Firebase service account
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: echo "$FIREBASE_SERVICE_ACCOUNT" | base64 -d > bot/service-account.json
+
       - name: Run bot
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CREATOR_ID: ${{ secrets.CREATOR_ID }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           PYTHONUNBUFFERED: "1"
         run: python -u bot/bot.py
