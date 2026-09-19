@@ -102,14 +102,11 @@ def api(method, **params):
     return response.json()
 
 
-def send_message(chat_id, text):
-    api(
-        "sendMessage",
-        chat_id=chat_id,
-        text=text,
-        parse_mode="Markdown",
-        reply_markup=MENU_KEYBOARD,
-    )
+def send_message(chat_id, text, markdown=True):
+    payload = {"chat_id": chat_id, "text": text, "reply_markup": MENU_KEYBOARD}
+    if markdown:
+        payload["parse_mode"] = "Markdown"
+    api("sendMessage", **payload)
 
 
 # ------------------------------- Роли -------------------------------
@@ -290,7 +287,7 @@ def handle_update(update):
         send_message(chat_id, commands_text(role))
     elif text in ("/top", "/leaderboard", TOP_BUTTON):
         try:
-            send_message(chat_id, format_top(load_leaderboard()))
+            send_message(chat_id, format_top(load_leaderboard()), markdown=False)
         except Exception as error:
             print("Ошибка чтения Firebase:", error)
             send_message(chat_id, "⚠️ Не удалось загрузить рекорды. Попробуй позже.")
@@ -328,14 +325,14 @@ def handle_update(update):
         if db is None:
             send_message(chat_id, "⚠️ Роли недоступны.")
             return
-        lines = ["👥 *Пользователи*", ""]
+        lines = ["👥 Пользователи", ""]
         for document in db.collection("users").stream():
             data = document.to_dict()
             uname = " @" + data["username"] if data.get("username") else ""
             lines.append(
-                f"`{document.id}` — {data.get('role', 'player')} — {data.get('nick', '')}{uname}"
+                f"{document.id} — {data.get('role', 'player')} — {data.get('nick', '')}{uname}"
             )
-        send_message(chat_id, "\n".join(lines[:40]))
+        send_message(chat_id, "\n".join(lines[:40]), markdown=False)
 
 
 def main():
