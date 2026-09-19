@@ -27,7 +27,7 @@ const TOWER_SELL_RATIO = 0.7;     // возврат золота при прод
 // Типы башен. cost — цена постройки, range — радиус в клетках,
 // fireRate — выстрелов в секунду, damage — урон, texture — картинка.
 const TOWER_TYPES = {
-  archer: {
+  gunner: {
     name: 'Стрелок',
     cost: 25,
     range: 2.5,
@@ -261,13 +261,13 @@ class Projectile extends Phaser.GameObjects.Arc {
 // ------------------------------ Башня ------------------------------
 // Башня хранит своё место на сетке, радиус атаки и перезарядку.
 class Tower {
-  constructor(scene, gx, gy, typeKey = 'archer') {
-    const type = TOWER_TYPES[typeKey] || TOWER_TYPES.archer;
+  constructor(scene, gx, gy, typeKey = 'gunner') {
+    const type = TOWER_TYPES[typeKey] || TOWER_TYPES.gunner;
 
     this.scene = scene;
     this.gx = gx; // центр башни в клетках (может быть дробным)
     this.gy = gy;
-    this.typeKey = typeKey;          // ключ типа ("archer", "minigun", ...)
+    this.typeKey = typeKey;          // ключ типа ("gunner", "minigun", ...)
     this.config = type;              // настройки типа
     this.level = 1;                  // уровень башни
     this.range = type.range;         // радиус атаки, клеток
@@ -366,7 +366,7 @@ class GameScene extends Phaser.Scene {
     this.load.image('tower', 'assets/tower.png');
     this.load.image('tower_minigun', 'assets/tower_minigun.png');
 
-    // Картинки башен по уровням: assets/archer_1.png ... archer_5.png и т.д.
+    // Картинки башен по уровням: assets/gunner_1.png ... gunner_5.png и т.д.
     for (const key in TOWER_TYPES) {
       for (let level = 1; level <= TOWER_MAX_LEVEL; level++) {
         this.load.image(`${key}_${level}`, `assets/${key}_${level}.png`);
@@ -399,7 +399,7 @@ class GameScene extends Phaser.Scene {
     // Выбранная башня (для меню улучшения/продажи).
     this.selectedTower = null;
     // Тип башни, который строим по клику (переключается панелью внизу).
-    this.selectedTowerType = 'archer';
+    this.selectedTowerType = 'gunner';
 
     // Кэш замеров картинок: где у них непрозрачная часть и её центр.
     // Заполняется лениво (при первом использовании текстуры).
@@ -1078,7 +1078,7 @@ class GameScene extends Phaser.Scene {
     tower.sprite.setPosition(pos.x, pos.y);
   }
 
-  // Ключ картинки для типа и уровня: "archer_3", "minigun_1" и т.д.
+  // Ключ картинки для типа и уровня: "gunner_3", "minigun_1" и т.д.
   // Если спрайта этого уровня ещё нет — берём ближайший предыдущий,
   // а если и их нет — базовую картинку типа.
   getTowerTextureKey(typeKey, level) {
