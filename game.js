@@ -527,6 +527,7 @@ class GameScene extends Phaser.Scene {
     // Данные игрока и роль (creator / tester / player) — роль читается из Firebase.
     this.playerInfo = this.getPlayerInfo();
     this.playerRole = 'player';
+    this.playerBest = { wave: 0, gold: 0 };
 
     // Состояние игрока (экономика и жизни).
     this.gold = START_GOLD;
@@ -879,6 +880,32 @@ class GameScene extends Phaser.Scene {
       this.showMenu(false);
     });
 
+    this.menuBest = this.add
+      .text(0, 0, '', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '18px',
+        color: '#f1c40f',
+      })
+      .setOrigin(0.5);
+
+    this.menuRules = this.add
+      .text(0, 0, 'ПРАВИЛА', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '22px',
+        color: '#ffffff',
+        backgroundColor: '#34495e',
+        padding: { x: 24, y: 10 },
+        stroke: '#000000',
+        strokeThickness: 3,
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+    this.menuRules.on('pointerdown', (pointer, localX, localY, event) => {
+      if (event && event.stopPropagation) event.stopPropagation();
+      this.openRules();
+    });
+
     this.menuHint = this.add
       .text(0, 0, '', {
         fontFamily: 'Arial, sans-serif',
@@ -887,12 +914,52 @@ class GameScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
+    // Панель правил.
+    this.rulesPanel = this.add.container(0, 0).setVisible(false);
+    this.rulesBg = this.add
+      .rectangle(0, 0, 1, 1, 0x0d0d1a, 0.98)
+      .setOrigin(0, 0)
+      .setInteractive();
+    this.rulesBg.on('pointerdown', (pointer, localX, localY, event) => {
+      if (event && event.stopPropagation) event.stopPropagation();
+    });
+    this.rulesText = this.add
+      .text(0, 0, '', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '18px',
+        color: '#ffffff',
+        align: 'left',
+        lineSpacing: 8,
+      })
+      .setOrigin(0.5);
+    this.rulesBack = this.add
+      .text(0, 0, 'НАЗАД', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '22px',
+        color: '#ffffff',
+        backgroundColor: '#e74c3c',
+        padding: { x: 24, y: 10 },
+        stroke: '#000000',
+        strokeThickness: 3,
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true });
+    this.rulesBack.on('pointerdown', (pointer, localX, localY, event) => {
+      if (event && event.stopPropagation) event.stopPropagation();
+      this.closeRules();
+    });
+    this.rulesPanel.add([this.rulesBg, this.rulesText, this.rulesBack]);
+
     this.menu.add([
       this.menuBg,
       this.menuTitle,
       this.menuProfile,
+      this.menuBest,
       this.menuPlay,
+      this.menuRules,
       this.menuHint,
+      this.rulesPanel,
     ]);
   }
 
@@ -941,6 +1008,7 @@ class GameScene extends Phaser.Scene {
       if (!data.ok) return;
 
       this.playerRole = data.role || 'player';
+      if (data.best) this.playerBest = data.best;
       this.refreshMenuProfile();
       this.updateUI();
     } catch (error) {
@@ -1296,12 +1364,37 @@ class GameScene extends Phaser.Scene {
     this.menu.setVisible(visible);
   }
 
-  // Ник и роль в меню.
+  // Ник, роль и рекорд в меню.
   refreshMenuProfile() {
     if (!this.menuProfile) return;
     const nick = this.playerInfo ? this.playerInfo.nick : 'Игрок';
     const prefix = this.roleLabel(this.playerRole);
     this.menuProfile.setText(prefix ? `${nick} · ${prefix}` : nick);
+
+    if (this.menuBest) {
+      const best = this.playerBest || { wave: 0, gold: 0 };
+      this.menuBest.setText(
+        best.wave > 0 ? `Рекорд: волна ${best.wave} · ${best.gold} золота` : 'Рекорда пока нет'
+      );
+    }
+  }
+
+  // Показать/скрыть правила.
+  openRules() {
+    if (!this.rulesPanel) return;
+    this.rulesText.setText(
+      'Цель — не пустить врагов до конца дороги.\n\n' +
+        '• Строй башни на свободных клетках (на дорогу нельзя)\n' +
+        '• Кнопка «СТАРТ ВОЛНЫ» запускает волну\n' +
+        '• Клик по башне — улучшить, переместить или продать\n' +
+        '• Золото дают за убийства врагов и зачистку волны\n' +
+        '• Враг, дошедший до конца, отнимает жизнь'
+    );
+    this.rulesPanel.setVisible(true);
+  }
+
+  closeRules() {
+    if (this.rulesPanel) this.rulesPanel.setVisible(false);
   }
 
   // Данные игрока: id (для документа) и ник (из профиля Telegram).
@@ -1485,18 +1578,35 @@ class GameScene extends Phaser.Scene {
       this.menuBg.setSize(width, height);
 
       const menuSize = Math.min(width, height);
-      this.menuTitle.setPosition(width / 2, height * 0.35);
+      this.menuTitle.setPosition(width / 2, height * 0.28);
       this.menuTitle.setStyle({ fontSize: `${Math.round(menuSize * 0.09)}px` });
 
-      this.menuProfile.setPosition(width / 2, height * 0.5);
+      this.menuProfile.setPosition(width / 2, height * 0.42);
       this.menuProfile.setStyle({ fontSize: `${Math.round(menuSize * 0.05)}px` });
 
-      this.menuPlay.setPosition(width / 2, height * 0.66);
+      this.menuBest.setPosition(width / 2, height * 0.49);
+      this.menuBest.setStyle({ fontSize: `${Math.round(menuSize * 0.045)}px` });
+
+      this.menuPlay.setPosition(width / 2, height * 0.61);
       this.menuPlay.setStyle({ fontSize: `${Math.round(menuSize * 0.07)}px` });
 
-      this.menuHint.setPosition(width / 2, height * 0.9);
+      this.menuRules.setPosition(width / 2, height * 0.72);
+      this.menuRules.setStyle({ fontSize: `${Math.round(menuSize * 0.05)}px` });
+
+      this.menuHint.setPosition(width / 2, height * 0.92);
       this.menuHint.setText(height > width ? 'Поверни телефон горизонтально' : '');
       this.menuHint.setStyle({ fontSize: `${Math.round(menuSize * 0.045)}px` });
+
+      // Панель правил.
+      this.rulesBg.setPosition(0, 0);
+      this.rulesBg.setSize(width, height);
+      this.rulesText.setPosition(width / 2, height * 0.45);
+      this.rulesText.setStyle({
+        fontSize: `${Math.round(menuSize * 0.04)}px`,
+        wordWrap: { width: width * 0.82 },
+      });
+      this.rulesBack.setPosition(width / 2, height * 0.85);
+      this.rulesBack.setStyle({ fontSize: `${Math.round(menuSize * 0.05)}px` });
     }
   }
 
@@ -2402,6 +2512,8 @@ const config = {
   type: Phaser.AUTO, // WebGL, а при его отсутствии — Canvas
   parent: 'game',
   backgroundColor: BG_COLOR,
+  // Рендер с учётом плотности пикселей экрана — картинка чётче на телефоне.
+  resolution: Math.min(window.devicePixelRatio || 1, 2),
   scale: {
     // RESIZE: canvas всегда занимает весь контейнер (#game = весь экран)
     mode: Phaser.Scale.RESIZE,

@@ -30,11 +30,15 @@ module.exports = async (req, res) => {
     // Создатель всегда остаётся создателем.
     if (id === String(CREATOR_ID)) role = 'creator';
 
+    const bestSnap = await db.collection('leaderboard').doc(id).get();
+    const bestData = bestSnap.exists ? bestSnap.data() : {};
+
     return res.status(200).json({
       ok: true,
       role,
       beta: role === 'creator' || role === 'tester',
       hidden: !!data.hidden,
+      best: { wave: bestData.wave || 0, gold: bestData.gold || 0 },
       nick: nickFor(auth.user),
     });
   } catch (error) {
