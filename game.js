@@ -524,7 +524,6 @@ class GameScene extends Phaser.Scene {
     this.betaAllowed = false; // creator/tester — могут переключать версию
     this.testMode = false;    // текущая версия: тест или оригинал
     this.isBeta = false;      // включены ли тестовые фичи
-    this.isHidden = false;    // скрыт ли игрок из таблицы лидеров
 
     // Состояние игрока (экономика и жизни).
     this.gold = START_GOLD;
@@ -701,80 +700,6 @@ class GameScene extends Phaser.Scene {
       this.toggleVersion();
     });
     this.refreshVersionButton();
-
-    // Кнопка настроек (шестерёнка) — видна всем.
-    this.settingsButton = this.add
-      .text(0, 0, '⚙', {
-        fontFamily: 'Arial, sans-serif',
-        fontSize: '24px',
-        color: '#ffffff',
-        backgroundColor: '#00000088',
-        padding: { x: 8, y: 4 },
-        stroke: '#000000',
-        strokeThickness: 3,
-      })
-      .setOrigin(0, 0)
-      .setInteractive({ useHandCursor: true })
-      .setDepth(100);
-
-    this.settingsButton.on('pointerdown', (pointer, localX, localY, event) => {
-      if (event && event.stopPropagation) event.stopPropagation();
-      this.toggleSettings();
-    });
-
-    // Панель настроек.
-    this.settingsMenu = this.add.container(0, 0).setDepth(103).setVisible(false);
-
-    this.settingsBg = this.add
-      .rectangle(0, 0, 300, 200, 0x000000, 0.92)
-      .setStrokeStyle(2, 0x9b59b6)
-      .setInteractive();
-    this.settingsBg.on('pointerdown', (pointer, localX, localY, event) => {
-      if (event && event.stopPropagation) event.stopPropagation();
-    });
-
-    this.settingsTitle = this.add
-      .text(0, -70, 'Настройки', {
-        fontFamily: 'Arial, sans-serif',
-        fontSize: '20px',
-        color: '#ffffff',
-        fontStyle: 'bold',
-      })
-      .setOrigin(0.5);
-
-    this.hideToggle = this.add
-      .text(0, -10, '', {
-        fontFamily: 'Arial, sans-serif',
-        fontSize: '18px',
-        color: '#f1c40f',
-      })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true });
-    this.hideToggle.on('pointerdown', (pointer, localX, localY, event) => {
-      if (event && event.stopPropagation) event.stopPropagation();
-      this.toggleHidden();
-    });
-
-    this.settingsClose = this.add
-      .text(0, 65, 'Закрыть', {
-        fontFamily: 'Arial, sans-serif',
-        fontSize: '18px',
-        color: '#e74c3c',
-      })
-      .setOrigin(0.5)
-      .setInteractive({ useHandCursor: true });
-    this.settingsClose.on('pointerdown', (pointer, localX, localY, event) => {
-      if (event && event.stopPropagation) event.stopPropagation();
-      this.closeSettings();
-    });
-
-    this.settingsMenu.add([
-      this.settingsBg,
-      this.settingsTitle,
-      this.hideToggle,
-      this.settingsClose,
-    ]);
-    this.refreshSettings();
 
     // Всплывающее предупреждение (например, "не хватает золота").
     this.messageText = this.add
@@ -959,40 +884,7 @@ class GameScene extends Phaser.Scene {
     this.scene.restart();
   }
 
-  // Показать/скрыть панель настроек.
-  toggleSettings() {
-    if (this.isGameOver) return;
-    this.settingsMenu.setVisible(!this.settingsMenu.visible);
-  }
 
-  closeSettings() {
-    if (this.settingsMenu) this.settingsMenu.setVisible(false);
-  }
-
-  refreshSettings() {
-    if (this.hideToggle) {
-      this.hideToggle.setText(this.isHidden ? 'Скрыт из списка: Вкл' : 'Скрыт из списка: Выкл');
-    }
-  }
-
-  // Скрыть/показать себя в таблице лидеров.
-  async toggleHidden() {
-    this.isHidden = !this.isHidden;
-    this.refreshSettings();
-    this.showMessage(this.isHidden ? 'Ты скрыт из списка' : 'Ты снова в списке');
-
-    const initData = this.getInitData();
-    if (!initData) return;
-    try {
-      await fetch(`${API_BASE}/api/settings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ initData, hidden: this.isHidden }),
-      });
-    } catch (error) {
-      console.warn('Не удалось сохранить настройку:', error);
-    }
-  }
 
   // Строка initData из Telegram — именно её проверяет сервер.
   getInitData() {
@@ -1024,8 +916,6 @@ class GameScene extends Phaser.Scene {
       this.testMode = this.betaAllowed && (stored === null ? true : stored === '1');
       this.isBeta = this.betaAllowed && this.testMode;
 
-      this.isHidden = !!data.hidden;
-      this.refreshSettings();
       this.refreshVersionButton();
       if (this.versionButton) this.versionButton.setVisible(this.betaAllowed);
       this.updateUI();
@@ -1058,8 +948,6 @@ class GameScene extends Phaser.Scene {
     this.buildMenu.setVisible(false); // прячем панель постройки
     this.ghost.setVisible(false); // прячем призрак башни
     this.clearRangeRing(); // убираем кольцо радиуса
-    this.settingsButton.setVisible(false); // прячем настройки
-    this.closeSettings();
 
     // Небольшой эффект появления.
     this.gameOverText.setScale(0.5);
@@ -1516,17 +1404,10 @@ class GameScene extends Phaser.Scene {
     this.startButton.setStyle({ fontSize: `${Math.round(uiSize)}px` });
     this.startButton.setVisible(!this.isWaveActive && !this.isGameOver);
 
-    // Кнопка настроек — под кнопкой старта.
-    this.settingsButton.setPosition(pad, pad + uiSize * 2.1);
-    this.settingsButton.setVisible(!this.isGameOver);
-
-    // Переключатель версии — под настройками.
-    this.versionButton.setPosition(pad, pad + uiSize * 4.2);
+    // Переключатель версии — под кнопкой старта.
+    this.versionButton.setPosition(pad, pad + uiSize * 2.1);
     this.versionButton.setStyle({ fontSize: `${Math.round(uiSize * 0.8)}px` });
     this.versionButton.setVisible(this.betaAllowed && !this.isGameOver);
-
-    // Панель настроек — по центру экрана.
-    this.settingsMenu.setPosition(width / 2, height / 2);
 
     this.messageText.setPosition(width / 2, height * 0.8);
     this.messageText.setStyle({ fontSize: `${Math.round(uiSize * 0.9)}px` });
@@ -2156,9 +2037,6 @@ class GameScene extends Phaser.Scene {
   // Обработка нажатия: башня — перетаскивание, пустое место — режим установки.
   handlePointerDown(pointer) {
     if (this.isGameOver) return;
-
-    // Клик по полю закрывает настройки.
-    this.closeSettings();
 
     // ПКМ — полностью отменяем: перенос, установку и выбор башни.
     if (pointer.rightButtonDown()) {

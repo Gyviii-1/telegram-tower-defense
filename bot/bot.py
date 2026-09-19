@@ -53,8 +53,9 @@ FIRESTORE_URL = (
 
 TOP_BUTTON = "🏆 Топ-10"
 ME_BUTTON = "📊 Мой рекорд"
+SETTINGS_BUTTON = "⚙ Настройки"
 MENU_KEYBOARD = {
-    "keyboard": [[{"text": TOP_BUTTON}, {"text": ME_BUTTON}]],
+    "keyboard": [[{"text": TOP_BUTTON}, {"text": ME_BUTTON}], [{"text": SETTINGS_BUTTON}]],
     "resize_keyboard": True,
 }
 
@@ -102,8 +103,12 @@ def api(method, **params):
     return response.json()
 
 
-def send_message(chat_id, text, markdown=True):
-    payload = {"chat_id": chat_id, "text": text, "reply_markup": MENU_KEYBOARD}
+def send_message(chat_id, text, markdown=True, keyboard=None):
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "reply_markup": keyboard if keyboard is not None else MENU_KEYBOARD,
+    }
     if markdown:
         payload["parse_mode"] = "Markdown"
     api("sendMessage", **payload)
@@ -179,6 +184,36 @@ def resolve_target(target):
     )
 
 
+def get_user_data(user_id):
+    """Данные пользователя из Firestore (роль, скрыт и т.д.)."""
+    if db is None:
+        return {}
+    snapshot = db.collection("users").document(str(user_id)).get()
+    return snapshot.to_dict() if snapshot.exists else {}
+
+
+def settings_text(user_id):
+    hidden = "Да" if get_user_data(user_id).get("hidden") else "Нет"
+    return f"⚙ Настройки\n\nСкрыт из списка: {hidden}"
+
+
+def settings_keyboard(user_id):
+    hidden = bool(get_user_data(user_id).get("hidden"))
+    label = "Показать в списке" if hidden else "Скрыть из списка"
+    return {"inline_keyboard": [[{"text": label, "callback_data": "toggle_hidden"}]]}
+
+
+def toggle_hidden(user_id):
+    """Переключает «скрыт из списка». Возвращает новое значение или None."""
+    if db is None:
+        return None
+    new_value = not bool(get_user_data(user_id).get("hidden"))
+    db.collection("users").document(str(user_id)).set(
+        {"hidden": new_value, "updatedAt": firestore.SERVER_TIMESTAMP}, merge=True
+    )
+    return new_value
+
+
 def commands_text(role):
     """Список доступных команд с учётом роли."""
     lines = [
@@ -188,6 +223,7 @@ def commands_text(role):
         "/top — топ-10 игроков",
         "/me — мой личный рекорд",
         "/whoami — мой ID и роль",
+        "/settings — настройки (скрыть из списка)",
         "/help — этот список",
     ]
     if role == "creator":
@@ -271,7 +307,34 @@ def format_player(player_id, records):
 
 
 # ------------------------------ Обработка ------------------------------
+def handle_callback(callback):
+    """Нажатия на inline-кнопки (например, переключатель «скрыт из списка»)."""
+    data = callback.get("data", "")
+    message = callback.get("message", {})
+    chat_id = message.get("chat", {}).get("id")
+    message_id = message.get("message_id")
+    user_id = str(callback.get("from", {}).get("id", ""))
+
+    if data == "toggle_hidden":
+        new_value = toggle_hidden(user_id)
+        api("answerCallbackQuery", callback_query_id=callback.get("id"))
+        if new_value is None:
+            return
+        api(
+            "editMessageText",
+            chat_id=chat_id,
+            message_id=message_id,
+            text=settings_text(user_id),
+            reply_markup=settings_keyboard(user_id),
+        )
+
+
 def handle_update(update):
+    callback = update.get("callback_query")
+    if callback:
+        handle_callback(callback)
+        return
+
     message = update.get("message")
     if not message:
         return
@@ -300,6 +363,13 @@ def handle_update(update):
         )
     elif text in ("/help", "/commands"):
         send_message(chat_id, commands_text(role))
+    elif text in ("/settings", SETTINGS_BUTTON):
+        send_message(
+            chat_id,
+            settings_text(user_id),
+            markdown=False,
+            keyboard=settings_keyboard(user_id),
+        )
     elif text in ("/top", "/leaderboard", TOP_BUTTON):
         try:
             send_message(chat_id, format_top(load_leaderboard()), markdown=False)
@@ -311,7 +381,7 @@ def handle_update(update):
             if user_id in load_hidden_ids():
                 send_message(
                     chat_id,
-                    "🙈 Ты скрыт из списка. Вернуть можно в настройках игры (⚙).",
+                    "🙈 Ты скрыт из списка. Вернуть можно кнопкой ⚙ Настройки.",
                     markdown=False,
                 )
             else:
@@ -350,11 +420,13 @@ def handle_update(update):
         lines = ["👥 Пользователи", ""]
         for document in db.collection("users").stream():
             data = document.to_dict()
-            uname = " @" + data["username"] if data.get("username") else ""
+            nick = data.get("nick", "")
+            username = data.get("username")
+            # Не дублируем, если ник уже содержит @username.
+            if username and ("@" + username) != nick:
+                nick = f"{nick} @{username}" if nick else f"@{username}"
             hidden = " (скрыт)" if data.get("hidden") else ""
-            lines.append(
-                f"{document.id} — {data.get('role', 'player')} — {data.get('nick', '')}{uname}{hidden}"
-            )
+            lines.append(f"{document.id} — {data.get('role', 'player')} — {nick}{hidden}")
         send_message(chat_id, "\n".join(lines[:40]), markdown=False)
 
 
