@@ -521,7 +521,9 @@ class GameScene extends Phaser.Scene {
     // Данные игрока и роль (creator / tester / player) — роль читается из Firebase.
     this.playerInfo = this.getPlayerInfo();
     this.playerRole = 'player';
-    this.isBeta = false;
+    this.betaAllowed = false; // creator/tester — могут переключать версию
+    this.testMode = false;    // текущая версия: тест или оригинал
+    this.isBeta = false;      // включены ли тестовые фичи
 
     // Состояние игрока (экономика и жизни).
     this.gold = START_GOLD;
@@ -676,6 +678,29 @@ class GameScene extends Phaser.Scene {
       this.startNextWave();
     });
 
+    // Переключатель версии игры (виден только создателю/тестеру).
+    this.versionButton = this.add
+      .text(0, 0, '', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '18px',
+        color: '#9b59b6',
+        backgroundColor: '#00000088',
+        padding: { x: 10, y: 6 },
+        stroke: '#000000',
+        strokeThickness: 3,
+        fontStyle: 'bold',
+      })
+      .setOrigin(0, 0)
+      .setInteractive({ useHandCursor: true })
+      .setDepth(100)
+      .setVisible(false);
+
+    this.versionButton.on('pointerdown', (pointer, localX, localY, event) => {
+      if (event && event.stopPropagation) event.stopPropagation();
+      this.toggleVersion();
+    });
+    this.refreshVersionButton();
+
     // Всплывающее предупреждение (например, "не хватает золота").
     this.messageText = this.add
       .text(0, 0, '', {
@@ -823,8 +848,8 @@ class GameScene extends Phaser.Scene {
   updateUI() {
     const nick = this.playerInfo ? this.playerInfo.nick : 'Игрок';
     const prefix = this.roleLabel(this.playerRole);
-    const betaMark = this.isBeta ? ' · бета' : '';
-    const nameLine = prefix ? `${nick} · ${prefix}${betaMark}` : `${nick}${betaMark}`;
+    const modeMark = this.testMode ? ' · тест' : '';
+    const nameLine = prefix ? `${nick} · ${prefix}${modeMark}` : `${nick}${modeMark}`;
 
     this.uiText.setText(
       `${nameLine}\nВолна: ${this.currentWave}\nЖизни: ${this.lives}\nЗолото: ${this.gold}`
@@ -836,6 +861,27 @@ class GameScene extends Phaser.Scene {
     if (role === 'creator') return 'создатель';
     if (role === 'tester') return 'тестер';
     return '';
+  }
+
+  // Текст на кнопке версии.
+  refreshVersionButton() {
+    if (!this.versionButton) return;
+    this.versionButton.setText(this.testMode ? 'Версия: Тест' : 'Версия: Оригинал');
+  }
+
+  // Переключаем версию (оригинал ↔ тест). Доступно только creator/tester.
+  toggleVersion() {
+    if (!this.betaAllowed) return;
+
+    this.testMode = !this.testMode;
+    this.isBeta = this.betaAllowed && this.testMode;
+    try {
+      localStorage.setItem('td_test_mode', this.testMode ? '1' : '0');
+    } catch (error) {
+      /* ignore */
+    }
+    // Перезапуск, чтобы фичи применились заново.
+    this.scene.restart();
   }
 
   // Строка initData из Telegram — именно её проверяет сервер.
@@ -861,7 +907,15 @@ class GameScene extends Phaser.Scene {
       if (!data.ok) return;
 
       this.playerRole = data.role || 'player';
-      this.isBeta = !!data.beta;
+      this.betaAllowed = this.playerRole === 'creator' || this.playerRole === 'tester';
+
+      // Выбор версии запоминаем локально. Тестерам по умолчанию — тест.
+      const stored = localStorage.getItem('td_test_mode');
+      this.testMode = this.betaAllowed && (stored === null ? true : stored === '1');
+      this.isBeta = this.betaAllowed && this.testMode;
+
+      this.refreshVersionButton();
+      if (this.versionButton) this.versionButton.setVisible(this.betaAllowed);
       this.updateUI();
     } catch (error) {
       console.warn('Не удалось загрузить роль:', error);
@@ -1347,6 +1401,11 @@ class GameScene extends Phaser.Scene {
     this.startButton.setPosition(pad, pad);
     this.startButton.setStyle({ fontSize: `${Math.round(uiSize)}px` });
     this.startButton.setVisible(!this.isWaveActive && !this.isGameOver);
+
+    // Переключатель версии — под кнопкой старта.
+    this.versionButton.setPosition(pad, pad + uiSize * 2.1);
+    this.versionButton.setStyle({ fontSize: `${Math.round(uiSize * 0.8)}px` });
+    this.versionButton.setVisible(this.betaAllowed && !this.isGameOver);
 
     this.messageText.setPosition(width / 2, height * 0.8);
     this.messageText.setStyle({ fontSize: `${Math.round(uiSize * 0.9)}px` });
