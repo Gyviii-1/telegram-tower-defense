@@ -211,6 +211,17 @@ def firestore_value(value):
     return None
 
 
+def load_hidden_ids():
+    """ID игроков, которые скрылись из списка."""
+    if db is None:
+        return set()
+    try:
+        return {document.id for document in db.collection("users").where("hidden", "==", True).stream()}
+    except Exception as error:
+        print("Ошибка чтения скрытых:", error)
+        return set()
+
+
 def load_leaderboard():
     response = requests.get(FIRESTORE_URL, timeout=30)
     response.raise_for_status()
@@ -226,6 +237,10 @@ def load_leaderboard():
             "wave": int(firestore_value(fields.get("wave")) or 0),
             "gold": int(firestore_value(fields.get("gold")) or 0),
         })
+
+    # Скрытых игроков не показываем.
+    hidden = load_hidden_ids()
+    records = [record for record in records if record["id"] not in hidden]
 
     records.sort(key=lambda r: (r["wave"], r["gold"]), reverse=True)
     return records
@@ -293,7 +308,14 @@ def handle_update(update):
             send_message(chat_id, "⚠️ Не удалось загрузить рекорды. Попробуй позже.")
     elif text in ("/me", "/stats", ME_BUTTON):
         try:
-            send_message(chat_id, format_player(user_id, load_leaderboard()))
+            if user_id in load_hidden_ids():
+                send_message(
+                    chat_id,
+                    "🙈 Ты скрыт из списка. Вернуть можно в настройках игры (⚙).",
+                    markdown=False,
+                )
+            else:
+                send_message(chat_id, format_player(user_id, load_leaderboard()))
         except Exception as error:
             print("Ошибка чтения Firebase:", error)
             send_message(chat_id, "⚠️ Не удалось загрузить рекорд. Попробуй позже.")
@@ -329,8 +351,9 @@ def handle_update(update):
         for document in db.collection("users").stream():
             data = document.to_dict()
             uname = " @" + data["username"] if data.get("username") else ""
+            hidden = " (скрыт)" if data.get("hidden") else ""
             lines.append(
-                f"{document.id} — {data.get('role', 'player')} — {data.get('nick', '')}{uname}"
+                f"{document.id} — {data.get('role', 'player')} — {data.get('nick', '')}{uname}{hidden}"
             )
         send_message(chat_id, "\n".join(lines[:40]), markdown=False)
 

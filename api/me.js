@@ -25,9 +25,8 @@ module.exports = async (req, res) => {
 
     const db = getDb();
     const snapshot = await db.collection('users').doc(id).get();
-    if (snapshot.exists && snapshot.data().role) {
-      role = snapshot.data().role;
-    }
+    const data = snapshot.exists ? snapshot.data() : {};
+    if (data.role) role = data.role;
     // Создатель всегда остаётся создателем.
     if (id === String(CREATOR_ID)) role = 'creator';
 
@@ -35,6 +34,7 @@ module.exports = async (req, res) => {
       ok: true,
       role,
       beta: role === 'creator' || role === 'tester',
+      hidden: !!data.hidden,
       nick: nickFor(auth.user),
     });
   } catch (error) {
