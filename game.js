@@ -178,7 +178,7 @@ class Enemy extends Phaser.GameObjects.Rectangle {
     this.typeKey = typeKey;      // ключ типа
     this.config = type;          // настройки типа
     this.baseColor = type.color; // обычный цвет
-    this.fillColor = fillColor;  // текущая заливка (со щитом — другая)
+    this.baseFill = fillColor;   // текущая заливка (со щитом — другая)
     this.speed = type.speed;     // скорость: клеток в секунду
     this.reward = type.reward;   // золото за убийство
     this.sizeFactor = type.size; // размер относительно клетки
@@ -237,7 +237,7 @@ class Enemy extends Phaser.GameObjects.Rectangle {
   flash() {
     this.setFillStyle(ENEMY_HIT_COLOR);
     this.scene.time.delayedCall(80, () => {
-      if (this.active && !this.isDead) this.setFillStyle(this.fillColor);
+      if (this.active && !this.isDead) this.setFillStyle(this.baseFill);
     });
   }
 
@@ -255,8 +255,8 @@ class Enemy extends Phaser.GameObjects.Rectangle {
         // Щит сломан: остаток урона уходит в здоровье.
         this.hp += this.shield;
         this.shield = 0;
-        this.fillColor = this.baseColor;
-        this.setFillStyle(this.fillColor);
+        this.baseFill = this.baseColor;
+        this.setFillStyle(this.baseFill);
       } else {
         this.flash();
         return;
