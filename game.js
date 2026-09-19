@@ -35,7 +35,8 @@ const TOWER_TYPES = {
     damage: 1,
     accuracy: 1, // всегда попадает
     footprint: 0.7, // размер всей картинки в клетках (игра сама впишет в него спрайт)
-    texture: 'tower',
+    baseTexture: 'tower', // корпус (стоит на месте)
+    texture: 'tower', // запасная картинка
     color: 0x2ecc71,
   },
   minigun: {
@@ -46,7 +47,8 @@ const TOWER_TYPES = {
     damage: 1,
     accuracy: 0.7,   // 70% попаданий, 30% — разброс
     footprint: 1.0,  // крупнее стрелка
-    texture: 'tower_minigun',
+    baseTexture: 'tower_minigun', // корпус (стоит на месте)
+    texture: 'tower_minigun', // запасная картинка
     color: 0x3498db,
   },
 };
@@ -276,7 +278,9 @@ class Tower {
     this.accuracy = type.accuracy !== undefined ? type.accuracy : 1; // шанс попадания
     this.cooldown = 0;               // время до следующего выстрела, сек
     this.totalSpent = type.cost;     // сколько золота вложено (для продажи)
-    this.sprite = null;              // картинка башни (создаётся сценой)
+    this.aimAngle = 0;               // куда направлена пушка (радианы)
+    this.sprite = null;              // картинка пушки (вращается)
+    this.baseSprite = null;          // картинка корпуса (стоит на месте)
   }
 
   // Цена следующего улучшения (зависит от типа и уровня).
@@ -319,10 +323,22 @@ class Tower {
     const pos = this.getPosition(cellSize, offsetX, offsetY);
     const target = this.findTarget(enemies, pos, cellSize);
 
+    // Наводим пушку на цель.
+    if (target) {
+      this.aimAngle = Math.atan2(target.y - pos.y, target.x - pos.x);
+    }
+
     // Стреляем, только если есть цель и башня перезарядилась.
     if (!target || this.cooldown > 0) return;
 
-    this.shoot(pos, target);
+    // Выстрел из дула: чуть впереди центра по направлению пушки.
+    const muzzleDistance = this.config.footprint * 0.5 * cellSize;
+    const muzzle = {
+      x: pos.x + Math.cos(this.aimAngle) * muzzleDistance,
+      y: pos.y + Math.sin(this.aimAngle) * muzzleDistance,
+    };
+
+    this.shoot(muzzle, target);
     this.cooldown = 1 / this.fireRate; // перезарядка
   }
 
@@ -367,7 +383,9 @@ class GameScene extends Phaser.Scene {
     this.load.image('tower_minigun', 'assets/tower_minigun.png');
 
     // Картинки башен по уровням: assets/gunner_1.png ... gunner_5.png и т.д.
+    // А также корпус: assets/gunner_base.png (не вращается).
     for (const key in TOWER_TYPES) {
+      this.load.image(`${key}_base`, `assets/${key}_base.png`);
       for (let level = 1; level <= TOWER_MAX_LEVEL; level++) {
         this.load.image(`${key}_${level}`, `assets/${key}_${level}.png`);
       }
@@ -610,11 +628,13 @@ class GameScene extends Phaser.Scene {
     // Панель выбора башни для постройки (внизу экрана).
     this.createBuildMenu();
 
-    // «Призрак» башни, следующий за указателем (зелёный/красный).
+    // «Призрак» башни (корпус + пушка), следующий за указателем.
+    const ghostType = TOWER_TYPES[this.selectedTowerType];
+    this.ghostBase = this.add.image(0, 0, ghostType.baseTexture).setAlpha(0.6);
+    this.ghostWeapon = this.add.image(0, 0, ghostType.baseTexture).setAlpha(0.6);
     this.ghost = this.add
-      .image(0, 0, TOWER_TYPES[this.selectedTowerType].texture)
+      .container(0, 0, [this.ghostBase, this.ghostWeapon])
       .setDepth(5)
-      .setAlpha(0.6)
       .setVisible(false);
   }
 
@@ -781,9 +801,9 @@ class GameScene extends Phaser.Scene {
         this.selectTowerType(key);
       });
 
-      const icon = this.add
-        .image(0, -14, this.getTowerTextureKey(key, 1))
-        .setDisplaySize(40, 40);
+      const iconKey =
+        this.getWeaponTextureKey(key, 1) || this.getBaseTextureKey(key) || type.texture;
+      const icon = this.add.image(0, -14, iconKey).setDisplaySize(40, 40);
       const label = this.add
         .text(0, 26, `${type.name} · ${type.cost}`, {
           fontFamily: 'Arial, sans-serif',
@@ -1051,42 +1071,67 @@ class GameScene extends Phaser.Scene {
   }
 
   // ------------------------- Спрайты башен -------------------------
-  // Создаём картинку башни (если текстура загрузилась).
+  // Создаём корпус и пушку башни.
   createTowerSprite(tower) {
-    const textureKey = this.getTowerTextureKey(tower.typeKey, tower.level);
-    if (!this.textures.exists(textureKey)) return;
-
     const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
-    tower.sprite = this.add.image(pos.x, pos.y, textureKey).setDepth(1);
-    this.applyTowerVisual(tower.sprite, textureKey, tower.config.footprint);
+
+    // Корпус (стоит на месте).
+    const baseKey = this.getBaseTextureKey(tower.typeKey);
+    if (baseKey) {
+      tower.baseSprite = this.add.image(pos.x, pos.y, baseKey).setDepth(1);
+      this.applyTowerVisual(tower.baseSprite, baseKey, tower.config.footprint);
+    }
+
+    // Пушка (вращается к врагу).
+    const weaponKey = this.getWeaponTextureKey(tower.typeKey, tower.level);
+    if (weaponKey) {
+      tower.sprite = this.add.image(pos.x, pos.y, weaponKey).setDepth(2);
+      this.applyTowerVisual(tower.sprite, weaponKey, tower.config.footprint);
+    }
   }
 
-  // Меняем картинку башни (например, после улучшения уровня).
+  // Меняем пушку башни (например, после улучшения уровня).
   refreshTowerSprite(tower) {
-    if (!tower.sprite) {
-      this.createTowerSprite(tower);
+    const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+    const weaponKey = this.getWeaponTextureKey(tower.typeKey, tower.level);
+
+    if (!weaponKey) {
+      if (tower.sprite) {
+        tower.sprite.destroy();
+        tower.sprite = null;
+      }
       return;
     }
 
-    const textureKey = this.getTowerTextureKey(tower.typeKey, tower.level);
-    if (this.textures.exists(textureKey)) {
-      tower.sprite.setTexture(textureKey);
+    if (!tower.sprite) {
+      tower.sprite = this.add.image(pos.x, pos.y, weaponKey).setDepth(2);
+    } else {
+      tower.sprite.setTexture(weaponKey);
     }
-    this.applyTowerVisual(tower.sprite, textureKey, tower.config.footprint);
 
-    const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+    this.applyTowerVisual(tower.sprite, weaponKey, tower.config.footprint);
     tower.sprite.setPosition(pos.x, pos.y);
+    tower.sprite.setRotation(tower.aimAngle);
   }
 
-  // Ключ картинки для типа и уровня: "gunner_3", "minigun_1" и т.д.
-  // Если спрайта этого уровня ещё нет — берём ближайший предыдущий,
-  // а если и их нет — базовую картинку типа.
-  getTowerTextureKey(typeKey, level) {
+  // Ключ картинки корпуса: "gunner_base", иначе запасная картинка типа.
+  getBaseTextureKey(typeKey) {
+    const key = `${typeKey}_base`;
+    if (this.textures.exists(key)) return key;
+
+    const fallback = TOWER_TYPES[typeKey].baseTexture;
+    return this.textures.exists(fallback) ? fallback : null;
+  }
+
+  // Ключ картинки пушки для уровня: "gunner_3".
+  // Если спрайта этого уровня нет — берём ближайший предыдущий.
+  // Если пушек нет вообще — null (башня без пушки).
+  getWeaponTextureKey(typeKey, level) {
     for (let current = level; current >= 1; current--) {
       const key = `${typeKey}_${current}`;
       if (this.textures.exists(key)) return key;
     }
-    return TOWER_TYPES[typeKey].texture;
+    return null;
   }
 
   // Вписываем картинку башни в её footprint и ставим точку опоры в центр
@@ -1158,22 +1203,35 @@ class GameScene extends Phaser.Scene {
     };
   }
 
-  // Переставляем все спрайты башен (при изменении размера экрана).
+  // Переставляем корпус и пушку всех башен (при изменении размера экрана).
   layoutTowerSprites() {
     for (const tower of this.towers) {
-      if (!tower.sprite) continue;
       const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
-      tower.sprite.setPosition(pos.x, pos.y);
-      const textureKey = this.getTowerTextureKey(tower.typeKey, tower.level);
-      this.applyTowerVisual(tower.sprite, textureKey, tower.config.footprint);
+
+      const baseKey = this.getBaseTextureKey(tower.typeKey);
+      if (tower.baseSprite && baseKey) {
+        tower.baseSprite.setPosition(pos.x, pos.y);
+        this.applyTowerVisual(tower.baseSprite, baseKey, tower.config.footprint);
+      }
+
+      const weaponKey = this.getWeaponTextureKey(tower.typeKey, tower.level);
+      if (tower.sprite && weaponKey) {
+        tower.sprite.setPosition(pos.x, pos.y);
+        this.applyTowerVisual(tower.sprite, weaponKey, tower.config.footprint);
+      }
     }
   }
 
-  // Удаляем картинку башни (при продаже).
+  // Удаляем картинки башни (при продаже).
   destroyTowerSprite(tower) {
-    if (!tower.sprite) return;
-    tower.sprite.destroy();
-    tower.sprite = null;
+    if (tower.sprite) {
+      tower.sprite.destroy();
+      tower.sprite = null;
+    }
+    if (tower.baseSprite) {
+      tower.baseSprite.destroy();
+      tower.baseSprite = null;
+    }
   }
 
   // Проверка: является ли клетка дорогой.
@@ -1364,14 +1422,31 @@ class GameScene extends Phaser.Scene {
       return;
     }
 
+    // Корпус.
+    const baseKey = this.getBaseTextureKey(this.selectedTowerType);
+    if (baseKey) {
+      this.ghostBase.setTexture(baseKey).setVisible(true);
+      this.applyTowerVisual(this.ghostBase, baseKey, type.footprint);
+    } else {
+      this.ghostBase.setVisible(false);
+    }
+
+    // Пушка (у нового строения — 1-го уровня).
+    const weaponKey = this.getWeaponTextureKey(this.selectedTowerType, 1);
+    if (weaponKey) {
+      this.ghostWeapon.setTexture(weaponKey).setVisible(true);
+      this.applyTowerVisual(this.ghostWeapon, weaponKey, type.footprint);
+    } else {
+      this.ghostWeapon.setVisible(false);
+    }
+
     const pos = { x: this.offsetX + gx * this.cellSize, y: this.offsetY + gy * this.cellSize };
-    const ghostTexture = this.getTowerTextureKey(this.selectedTowerType, 1);
-    this.ghost.setTexture(ghostTexture);
-    this.applyTowerVisual(this.ghost, ghostTexture, type.footprint);
     this.ghost.setPosition(pos.x, pos.y);
 
     const canPlace = this.isFreeSpot(gx, gy, type) && this.gold >= type.cost;
-    this.ghost.setTint(canPlace ? 0x66ff66 : 0xff5555);
+    const tint = canPlace ? 0x66ff66 : 0xff5555;
+    this.ghostBase.setTint(tint);
+    this.ghostWeapon.setTint(tint);
     this.ghost.setVisible(true);
   }
 
@@ -1472,9 +1547,10 @@ class GameScene extends Phaser.Scene {
       }
     }
 
-    // Башни: перезарядка, поиск цели, выстрел.
+    // Башни: перезарядка, поиск цели, выстрел и наводка пушки.
     for (const tower of this.towers) {
       tower.update(delta, this.cellSize, this.offsetX, this.offsetY, this.enemies);
+      if (tower.sprite) tower.sprite.setRotation(tower.aimAngle);
     }
 
     // Снаряды.
