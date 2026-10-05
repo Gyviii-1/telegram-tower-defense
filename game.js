@@ -157,23 +157,71 @@ const START_GOLD = 100;           // стартовое золото игрок�
 const START_LIVES = 10;           // стартовые жизни игрока
 
 // Маршрут врагов задаётся угловыми точками (по клеткам сетки).
-// Враги заходят слева сверху (0,0), идут змейкой и выходят справа снизу (9,9).
-// Между точками путь всегда идёт по прямой (вправо/влево или вверх/вниз).
-const PATH_WAYPOINTS = [
-  { row: 0, col: 0 }, // старт — левый верхний угол
-  { row: 0, col: 6 }, // вправо по верхнему ряду
-  { row: 3, col: 6 }, // вниз
-  { row: 3, col: 1 }, // влево
-  { row: 6, col: 1 }, // вниз
-  { row: 6, col: 8 }, // вправо
-  { row: 9, col: 8 }, // вниз
-  { row: 9, col: 9 }, // финиш — правый нижний угол
+// ----------------------------- Мир / изометрия -----------------------------
+// 1 старая клетка = 1 world unit. Мир 10x10 юнитов.
+const WORLD_SIZE = GRID_SIZE;
+const ISO_HW = 64; // половина ширины изотайла (128 / 2)
+const ISO_HH = 32; // половина высоты изотайла (64 / 2)
+const ROAD_WIDTH = 1.0; // ширина дороги в world units
+
+// ЕДИНОЕ преобразование world <-> экран (iso-пиксели). Больше нигде нет iso-математики.
+function worldToScreen(wx, wy) {
+  return { x: (wx - wy) * ISO_HW, y: (wx + wy) * ISO_HH };
+}
+function screenToWorld(sx, sy) {
+  return { x: (sx / ISO_HW + sy / ISO_HH) / 2, y: (sy / ISO_HH - sx / ISO_HW) / 2 };
+}
+
+// Непрерывный маршрут в world-координатах (центры клеток старого пути).
+const ROUTE_WAYPOINTS = [
+  { x: 0.5, y: 0.5 },
+  { x: 6.5, y: 0.5 },
+  { x: 6.5, y: 3.5 },
+  { x: 1.5, y: 3.5 },
+  { x: 1.5, y: 6.5 },
+  { x: 8.5, y: 6.5 },
+  { x: 8.5, y: 9.5 },
+  { x: 9.5, y: 9.5 },
 ];
+
+// Route = { waypoints, segments, length }
+function buildRoute(waypoints) {
+  const segments = [];
+  let length = 0;
+  for (let i = 0; i < waypoints.length - 1; i++) {
+    const a = waypoints[i];
+    const b = waypoints[i + 1];
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const len = Math.hypot(dx, dy) || 1;
+    segments.push({ a, b, dir: { x: dx / len, y: dy / len }, length: len, sStart: length });
+    length += len;
+  }
+  return { waypoints, segments, length };
+}
+const ROUTE = buildRoute(ROUTE_WAYPOINTS);
+
+// Расстояние от точки до полилинии маршрута (world units) — источник истины.
+function distanceToRoute(px, py, route) {
+  let best = Infinity;
+  for (const seg of route.segments) {
+    const abx = seg.b.x - seg.a.x;
+    const aby = seg.b.y - seg.a.y;
+    const len2 = abx * abx + aby * aby || 1;
+    let t = ((px - seg.a.x) * abx + (py - seg.a.y) * aby) / len2;
+    t = Math.max(0, Math.min(1, t));
+    const cx = seg.a.x + abx * t;
+    const cy = seg.a.y + aby * t;
+    const d = Math.hypot(px - cx, py - cy);
+    if (d < best) best = d;
+  }
+  return best;
+}
 
 // ------------------------------ Враг ------------------------------
 // Враг — красный квадрат, который плавно едет по клеткам маршрута.
 class Enemy extends Phaser.GameObjects.Rectangle {
-  constructor(scene, pathCells, typeKey = 'normal', hp = ENEMY_HP, shield = 0) {
+  constructor(scene, route, typeKey = 'normal', hp = ENEMY_HP, shield = 0) {
     const type = ENEMY_TYPES[typeKey] || ENEMY_TYPES.normal;
     const fillColor = shield > 0 ? type.shieldColor || 0x66ccff : type.color;
     super(scene, 0, 0, 1, 1, fillColor);
@@ -182,58 +230,84 @@ class Enemy extends Phaser.GameObjects.Rectangle {
     this.config = type;          // настройки типа
     this.baseColor = type.color; // обычный цвет
     this.baseFill = fillColor;   // текущая заливка (со щитом — другая)
-    this.speed = type.speed;     // скорость: клеток в секунду
+    this.speed = type.speed;     // скорость: world units/sec
     this.reward = type.reward;   // золото за убийство
     this.sizeFactor = type.size; // размер относительно клетки
     this.damageMultiplier = type.damageMultiplier || 1; // броня (множитель урона)
     this.shield = shield;        // запас щита (снимается первым)
 
-    this.pathCells = pathCells; // полный список клеток маршрута ({row, col})
-    this.segment = 0;           // индекс текущего отрезка пути
-    this.progress = 0;          // прогресс по отрезку: 0..1
-    this.lastCellSize = 0;      // чтобы не пересчитывать размер каждый кадр
+    // Маршрут и непрерывная мировая позиция.
+    this.route = route;
+    this.segment = 0;
+    this.progress = 0;
+    this.wx = ROUTE_WAYPOINTS[0].x;
+    this.wy = ROUTE_WAYPOINTS[0].y;
+    this.dirX = 0;
+    this.dirY = 0;
+
     this.hp = hp;               // здоровье (по умолчанию базовое)
     this.isDead = false;        // мёртв/исчезает — не двигается и не цель для башен
 
+    // Размер — в iso-пикселях (ISO_HW), не зависит от экрана.
+    const size = this.sizeFactor * ISO_HW;
+    this.setSize(size, size);
+
+    const p = worldToScreen(this.wx, this.wy);
+    this.setPosition(p.x, p.y);
+
     scene.add.existing(this);   // добавляем объект в сцену
-    this.setDepth(0.6);         // враг ходит по дороге — ниже моста (мост 0.9)
+    this.refreshDepth();
   }
 
-  // Движение по маршруту. delta — мс, геометрия сетки передаётся из сцены,
-  // чтобы враг корректно перестраивался при изменении размера экрана.
-  moveAlongPath(delta, cellSize, offsetX, offsetY) {
-    // Размер квадрата зависит от размера клетки (обновляем только при изменении).
-    if (cellSize !== this.lastCellSize) {
-      const size = cellSize * this.sizeFactor;
-      this.setSize(size, size);
-      this.lastCellSize = cellSize;
-    }
+  // Глубина отрисовки в изометрии — по (wx + wy).
+  refreshDepth() {
+    this.setDepth(10 + (this.wx + this.wy) * 0.01);
+  }
 
-    // Прогресс в клетках за кадр: скорость (клеток/сек) * время (сек).
-    this.progress += this.speed * (delta / 1000);
+  // world -> экран (только для отрисовки; логика — в world).
+  syncScreen() {
+    const p = worldToScreen(this.wx, this.wy);
+    this.x = p.x;
+    this.y = p.y;
+    this.refreshDepth();
+  }
 
-    // Переходим на следующий отрезок, если текущий пройден.
-    while (this.progress >= 1 && this.segment < this.pathCells.length - 1) {
-      this.progress -= 1;
-      this.segment += 1;
-    }
-
-    // Дошли до конца маршрута — враг покидает карту.
-    if (this.segment >= this.pathCells.length - 1) {
+  // Движение по сегментам Route в world-координатах.
+  // delta — мс; экранные координаты в логике движения не участвуют.
+  moveAlongPath(delta) {
+    const segments = this.route.segments;
+    if (this.segment >= segments.length) {
       this.arriveAtEnd();
       return;
     }
 
-    // Интерполируем позицию между началом и концом текущего отрезка.
-    const from = this.pathCells[this.segment];
-    const to = this.pathCells[this.segment + 1];
-    const ax = offsetX + (from.col + 0.5) * cellSize;
-    const ay = offsetY + (from.row + 0.5) * cellSize;
-    const bx = offsetX + (to.col + 0.5) * cellSize;
-    const by = offsetY + (to.row + 0.5) * cellSize;
+    let seg = segments[this.segment];
+    this.progress += (this.speed * (delta / 1000)) / seg.length;
 
-    this.x = Phaser.Math.Linear(ax, bx, this.progress);
-    this.y = Phaser.Math.Linear(ay, by, this.progress);
+    // Перескок через несколько сегментов за один кадр — без телепортов.
+    while (this.progress >= 1 && this.segment < segments.length - 1) {
+      this.progress -= 1;
+      this.segment += 1;
+    }
+
+    // Дошли до конца маршрута.
+    if (this.segment >= segments.length - 1 && this.progress >= 1) {
+      seg = segments[this.segment];
+      this.wx = seg.b.x;
+      this.wy = seg.b.y;
+      this.dirX = seg.dir.x;
+      this.dirY = seg.dir.y;
+      this.syncScreen();
+      this.arriveAtEnd();
+      return;
+    }
+
+    seg = segments[this.segment];
+    this.wx = Phaser.Math.Linear(seg.a.x, seg.b.x, this.progress);
+    this.wy = Phaser.Math.Linear(seg.a.y, seg.b.y, this.progress);
+    this.dirX = seg.dir.x;
+    this.dirY = seg.dir.y;
+    this.syncScreen();
   }
 
   // Короткая белая вспышка при попадании.
@@ -306,27 +380,27 @@ class Enemy extends Phaser.GameObjects.Rectangle {
 // Маленький жёлтый кружок, который летит от башни точно в цель (самонаведение).
 class Projectile extends Phaser.GameObjects.Arc {
   constructor(scene, x, y, target, damage = PROJECTILE_DAMAGE, willHit = true) {
-    super(scene, x, y, Math.max(3, scene.cellSize * 0.12), 0, 360, false, PROJECTILE_COLOR);
+    super(scene, x, y, Math.max(3, ISO_HW * 0.12), 0, 360, false, PROJECTILE_COLOR);
 
     this.target = target;   // враг, в которого стреляли
     this.damage = damage;   // урон башни (растёт с уровнем)
     this.willHit = willHit; // попадёт ли этот выстрел
 
     if (!willHit) {
-      // Промах: выбираем случайную точку рядом с целью (разброс).
-      const spread = scene.cellSize * 1.2;
+      // Промах: случайная точка рядом с целью (разброс).
+      const spread = ISO_HW * 1.2;
       this.missX = target.x + Phaser.Math.Between(-spread, spread);
       this.missY = target.y + Phaser.Math.Between(-spread, spread);
-      this.setAlpha(0.7); // промахи чуть бледнее
+      this.setAlpha(0.7);
     }
 
     scene.add.existing(this);
-    this.setDepth(4); // снаряды поверх всего игрового поля
+    this.setDepth(50); // снаряды поверх мира (ниже UI 90+)
   }
 
-  // Летим к цели; при достижении наносим урон и исчезаем.
-  flyToTarget(delta, cellSize) {
-    const step = PROJECTILE_SPEED * cellSize * (delta / 1000);
+  // Летим к цели (экранное самонаведение); при попадании наносим урон.
+  flyToTarget(delta) {
+    const step = PROJECTILE_SPEED * ISO_HW * (delta / 1000);
 
     // Точный выстрел: самонаведение на врага.
     if (this.willHit) {
@@ -426,22 +500,19 @@ class Tower {
     this.totalSpent += cost;
   }
 
-  // Центр башни в пикселях с учётом текущей геометрии сетки.
-  getPosition(cellSize, offsetX, offsetY) {
-    return {
-      x: offsetX + this.gx * cellSize,
-      y: offsetY + this.gy * cellSize,
-    };
+  // Позиция на экране (iso) из world-координат.
+  getPosition() {
+    return worldToScreen(this.gx, this.gy);
   }
 
   // Обновление башни: перезарядка, поиск цели, выстрел.
-  update(delta, cellSize, offsetX, offsetY, enemies) {
+  update(delta, enemies) {
     this.cooldown -= delta / 1000;
 
-    const pos = this.getPosition(cellSize, offsetX, offsetY);
-    const target = this.findTarget(enemies, pos, cellSize);
+    const pos = this.getPosition();
+    const target = this.findTarget(enemies);
 
-    // Наводим пушку на цель.
+    // Наводим пушку на цель (визуально — по экранным позициям).
     if (target) {
       this.aimAngle = Math.atan2(target.y - pos.y, target.x - pos.x);
     }
@@ -451,7 +522,7 @@ class Tower {
 
     // Выстрел из дула: чуть впереди центра по направлению пушки.
     const weaponScale = this.config.weaponScale || 1;
-    const muzzleDistance = this.config.footprint * weaponScale * 0.5 * cellSize;
+    const muzzleDistance = this.config.footprint * weaponScale * 0.5 * ISO_HW;
     const muzzle = {
       x: pos.x + Math.cos(this.aimAngle) * muzzleDistance,
       y: pos.y + Math.sin(this.aimAngle) * muzzleDistance,
@@ -461,17 +532,16 @@ class Tower {
     this.cooldown = 1 / this.fireRate; // перезарядка
   }
 
-  // Ищем ближайшего живого врага в радиусе атаки.
-  findTarget(enemies, pos, cellSize) {
-    const rangePx = this.range * cellSize;
+  // Ищем ближайшего живого врага. Дальность — в world units.
+  findTarget(enemies) {
     let nearest = null;
     let nearestDistance = Infinity;
 
     for (const enemy of enemies) {
       if (!enemy.active || enemy.isDead) continue;
 
-      const distance = Phaser.Math.Distance.Between(pos.x, pos.y, enemy.x, enemy.y);
-      if (distance <= rangePx && distance < nearestDistance) {
+      const distance = Math.hypot(this.gx - enemy.wx, this.gy - enemy.wy);
+      if (distance <= this.range && distance < nearestDistance) {
         nearest = enemy;
         nearestDistance = distance;
       }
@@ -1056,25 +1126,25 @@ class GameScene extends Phaser.Scene {
     this.dragMoved = false;
     this.isPlacing = false;
 
-    // Строим маршрут: список клеток + быстрый доступ "клетка это дорога?".
+    // Маршрут (источник истины) + производная навигационная сетка для BFS/моста.
+    this.route = ROUTE;
     this.buildPath();
 
     // Списки живых врагов и снарядов.
     this.enemies = [];
     this.projectiles = [];
 
-    // Отдельная графика для клеток сетки и для башен —
-    // так их можно перерисовывать независимо.
-    // Слои по глубине: сетка (0) → спрайты башен (1) → точки уровня (2) →
-    // враги (3) → снаряды (4) → UI (90+).
-    this.gridGraphics = this.add.graphics().setDepth(0);
-    this.rangeGraphics = this.add.graphics().setDepth(0.5); // кольцо радиуса атаки
-    this.towersGraphics = this.add.graphics().setDepth(2);
+    // Слои: земля (0) → дорога (1) → кольцо радиуса (2) → fallback (3)
+    // → мир (10+) → снаряды (500) → UI (900+).
+    this.groundGraphics = this.add.graphics().setDepth(0);
+    this.roadGraphics = this.add.graphics().setDepth(1);
+    this.rangeGraphics = this.add.graphics().setDepth(2);
+    this.towersGraphics = this.add.graphics().setDepth(3);
 
-    // Геометрия сетки (пересчитывается в layout()).
-    this.cellSize = 0; // размер одной клетки в пикселях
-    this.offsetX = 0;  // сдвиг сетки по X (чтобы центрировать)
-    this.offsetY = 0;  // сдвиг сетки по Y
+    // Пиксельный масштаб мира (iso) — константа, не зависит от экрана.
+    this.cellSize = ISO_HW;
+    this.offsetX = 0;
+    this.offsetY = 0;
 
     // Создаём UI (тексты поверх всего).
     this.createUI();
@@ -1131,6 +1201,9 @@ class GameScene extends Phaser.Scene {
     this.input.on('pointermove', this.handlePointerMove, this);
     this.input.on('pointerup', this.handlePointerUp, this);
     this.input.on('pointerupoutside', this.handlePointerUp, this);
+
+    // Масштаб камеры: колесо (ПК) и два пальца (телефон: pinch + pan).
+    this.setupZoom();
 
     // Волны запускаются вручную кнопкой "[ СТАРТ ВОЛНЫ ]".
   }
@@ -1335,9 +1408,24 @@ class GameScene extends Phaser.Scene {
     this.ghostWeapon = this.add.image(0, 0, ghostType.baseTexture).setAlpha(0.6);
     this.ghost = this.add
       .container(0, 0, [this.ghostBase, this.ghostWeapon])
-      .setDepth(5)
+      .setDepth(40)
       .setVisible(false);
 
+    // UI фиксируется на экране (не двигается и не масштабируется камерой).
+    const fixedUI = [
+      this.uiText,
+      this.startButton,
+      this.menuButton,
+      this.messageText,
+      this.overlay,
+      this.gameOverText,
+      this.restartButton,
+      this.towerMenu,
+      this.buildMenu,
+    ];
+    for (const obj of fixedUI) {
+      if (obj) obj.setScrollFactor(0);
+    }
   }
 
   // Обновляем текст панели при изменении волны/жизней/золота.
@@ -1488,7 +1576,8 @@ class GameScene extends Phaser.Scene {
     const tower = this.selectedTower;
     if (!tower) return;
 
-    const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+    // towerMenu — UI (scrollFactor 0), поэтому берём экранные координаты башни.
+    const pos = this.worldToUI(tower.gx, tower.gy);
     const width = this.scale.width;
     const height = this.scale.height;
     const halfW = 135; // половина ширины фона меню (270 / 2)
@@ -1496,9 +1585,9 @@ class GameScene extends Phaser.Scene {
     const margin = 8;
 
     let x = pos.x;
-    let y = pos.y - this.cellSize * 0.8 - halfH; // сначала пробуем над башней
+    let y = pos.y - 70 - halfH; // сначала пробуем над башней
     if (y - halfH < margin) {
-      y = pos.y + this.cellSize * 0.8 + halfH; // не влезло — ставим под башней
+      y = pos.y + 70 + halfH; // не влезло — ставим под башней
     }
 
     x = Phaser.Math.Clamp(x, halfW + margin, width - halfW - margin);
@@ -1679,7 +1768,7 @@ class GameScene extends Phaser.Scene {
 
     for (let i = 0; i < count; i++) {
       const hp = Math.round(base.hp * scale);
-      const child = new Enemy(this, this.pathCells, typeKey, hp, 0);
+      const child = new Enemy(this, this.route, typeKey, hp, 0);
       // Ставим детей туда же, где погиб родитель (чуть вразброс).
       child.segment = parent.segment;
       child.progress = Math.max(0, parent.progress - i * 0.08);
@@ -1822,33 +1911,21 @@ class GameScene extends Phaser.Scene {
   // Заполняем:
   //   this.pathCells — все клетки маршрута по порядку (для движения врагов);
   //   this.road       — двумерный массив true/false (дорога или нет).
+  // Производная навигационная сетка: «дорога» = клетки, чьи центры ближе
+  // ROAD_WIDTH/2 к полилинии Route. Источник истины — ROUTE, сетка — лишь
+  // приближение (нужно для BFS/переноса и клеточной механики моста).
   buildPath() {
     this.road = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(false));
     this.pathCells = [];
 
-    const addCell = (row, col) => {
-      const last = this.pathCells[this.pathCells.length - 1];
-      if (last && last.row === row && last.col === col) return; // без дублей
-      this.pathCells.push({ row, col });
-      this.road[row][col] = true;
-    };
-
-    for (let i = 0; i < PATH_WAYPOINTS.length - 1; i++) {
-      const from = PATH_WAYPOINTS[i];
-      const to = PATH_WAYPOINTS[i + 1];
-
-      const dr = Math.sign(to.row - from.row); // шаг по строкам (-1, 0, 1)
-      const dc = Math.sign(to.col - from.col); // шаг по столбцам (-1, 0, 1)
-
-      let row = from.row;
-      let col = from.col;
-      addCell(row, col);
-
-      // Идём клетка за клеткой до конечной точки отрезка.
-      while (row !== to.row || col !== to.col) {
-        row += dr;
-        col += dc;
-        addCell(row, col);
+    for (let row = 0; row < GRID_SIZE; row++) {
+      for (let col = 0; col < GRID_SIZE; col++) {
+        const wx = col + 0.5;
+        const wy = row + 0.5;
+        if (distanceToRoute(wx, wy, this.route) <= ROAD_WIDTH / 2) {
+          this.road[row][col] = true;
+          this.pathCells.push({ row, col });
+        }
       }
     }
   }
@@ -1859,16 +1936,100 @@ class GameScene extends Phaser.Scene {
     const width = this.scale.width;
     const height = this.scale.height;
 
-    // Вписываем квадратную сетку в экран, сохраняя размер клеток равным по X и Y.
-    this.cellSize = Math.min(width, height) / GRID_SIZE;
-    // Центрируем сетку в оставшемся пространстве.
-    this.offsetX = (width - this.cellSize * GRID_SIZE) / 2;
-    this.offsetY = (height - this.cellSize * GRID_SIZE) / 2;
+    // Пиксельный масштаб мира — константа (iso), не зависит от экрана.
+    this.cellSize = ISO_HW;
 
-    this.drawGrid();
+    this.drawGround();
+    this.drawRoad();
     this.drawTowers();
     this.layoutTowerSprites();
     this.layoutUI(width, height);
+    this.setupCamera();
+  }
+
+  // Камера работает поверх world-space (iso-пикселей).
+  setupCamera() {
+    const cam = this.cameras.main;
+    const center = worldToScreen(WORLD_SIZE / 2, WORLD_SIZE / 2);
+    cam.centerOn(center.x, center.y);
+    if (!this.cameraInitialized) {
+      cam.setZoom(this.fitZoom());
+      this.cameraInitialized = true;
+    }
+  }
+
+  // Зум, при котором карта целиком влезает в экран.
+  fitZoom() {
+    const width = this.scale.width;
+    const height = this.scale.height;
+    const mapW = WORLD_SIZE * ISO_HW * 2;
+    const mapH = WORLD_SIZE * ISO_HH * 2;
+    return Math.min(width / mapW, height / mapH) * 0.95;
+  }
+
+  minZoom() {
+    return this.fitZoom() * 0.5;
+  }
+
+  maxZoom() {
+    return this.fitZoom() * 4;
+  }
+
+  // Экранные (UI) координаты из world — для меню, привязанных к башне.
+  worldToUI(wx, wy) {
+    const cam = this.cameras.main;
+    const topLeft = cam.getWorldPoint(0, 0);
+    const p = worldToScreen(wx, wy);
+    return { x: (p.x - topLeft.x) * cam.zoom, y: (p.y - topLeft.y) * cam.zoom };
+  }
+
+  // Управление зумом/пэном: колесо (ПК) и два пальца (тач).
+  setupZoom() {
+    const cam = this.cameras.main;
+
+    this.input.on('wheel', (pointer, gameObjects, dx, dy) => {
+      const factor = dy > 0 ? 0.9 : 1.1;
+      cam.setZoom(Phaser.Math.Clamp(cam.zoom * factor, this.minZoom(), this.maxZoom()));
+    });
+
+    this.input.addPointer(1);
+    this.pinchDistance = 0;
+    this.pinchActive = false;
+    this.pinchMid = { x: 0, y: 0 };
+
+    this.input.on('pointermove', () => {
+      const p1 = this.input.pointer1;
+      const p2 = this.input.pointer2;
+
+      if (p1.isDown && p2.isDown) {
+        const distance = Phaser.Math.Distance.Between(p1.x, p1.y, p2.x, p2.y);
+        const midX = (p1.x + p2.x) / 2;
+        const midY = (p1.y + p2.y) / 2;
+
+        if (this.pinchActive) {
+          // Зум по изменению расстояния.
+          if (this.pinchDistance > 0) {
+            const next = Phaser.Math.Clamp(
+              cam.zoom * (distance / this.pinchDistance),
+              this.minZoom(),
+              this.maxZoom()
+            );
+            cam.setZoom(next);
+          }
+          // Пан по движению середины.
+          cam.scrollX -= (midX - this.pinchMid.x) / cam.zoom;
+          cam.scrollY -= (midY - this.pinchMid.y) / cam.zoom;
+        }
+
+        this.pinchDistance = distance;
+        this.pinchMid.x = midX;
+        this.pinchMid.y = midY;
+        this.pinchActive = true;
+      } else {
+        this.pinchActive = false;
+        this.pinchDistance = 0;
+      }
+    });
   }
 
   // Позиционируем элементы интерфейса под новый размер экрана.
@@ -1915,24 +2076,37 @@ class GameScene extends Phaser.Scene {
 
   }
 
-  // Рисуем клетки сетки. Дорогу подсвечиваем другим цветом.
-  drawGrid() {
-    const g = this.gridGraphics;
+  // Земля — большой изометрический ромб (без видимой квадратной сетки).
+  drawGround() {
+    const g = this.groundGraphics;
     g.clear();
+    const corners = [
+      worldToScreen(0, 0),
+      worldToScreen(WORLD_SIZE, 0),
+      worldToScreen(WORLD_SIZE, WORLD_SIZE),
+      worldToScreen(0, WORLD_SIZE),
+    ];
+    g.fillStyle(CELL_COLOR, 1);
+    g.fillPoints(corners, true);
+    g.lineStyle(3, GRID_LINE_COLOR, 1);
+    g.strokePoints(corners, true);
+  }
 
-    for (let row = 0; row < GRID_SIZE; row++) {
-      for (let col = 0; col < GRID_SIZE; col++) {
-        const x = this.offsetX + col * this.cellSize;
-        const y = this.offsetY + row * this.cellSize;
+  // Дорога — изополоса вдоль полилинии Route (толщина ROAD_WIDTH).
+  drawRoad() {
+    const g = this.roadGraphics;
+    g.clear();
+    const half = ROAD_WIDTH / 2;
+    g.fillStyle(ROAD_COLOR, 1);
 
-        // Заливка клетки: дорога или свободная земля.
-        g.fillStyle(this.isRoad(row, col) ? ROAD_COLOR : CELL_COLOR, 1);
-        g.fillRect(x, y, this.cellSize, this.cellSize);
-
-        // Рамка клетки.
-        g.lineStyle(2, GRID_LINE_COLOR, 1);
-        g.strokeRect(x, y, this.cellSize, this.cellSize);
-      }
+    for (const seg of this.route.segments) {
+      const nx = -seg.dir.y * half;
+      const ny = seg.dir.x * half;
+      const p1 = worldToScreen(seg.a.x + nx, seg.a.y + ny);
+      const p2 = worldToScreen(seg.b.x + nx, seg.b.y + ny);
+      const p3 = worldToScreen(seg.b.x - nx, seg.b.y - ny);
+      const p4 = worldToScreen(seg.a.x - nx, seg.a.y - ny);
+      g.fillPoints([p1, p2, p3, p4], true);
     }
   }
 
@@ -1944,7 +2118,7 @@ class GameScene extends Phaser.Scene {
     for (const tower of this.towers) {
       // Запасной вариант: если картинки нет — рисуем кружок цветом типа.
       if (!this.textures.exists(tower.config.texture)) {
-        const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+        const pos = tower.getPosition();
         const half = (this.cellSize * tower.config.footprint) / 2;
         g.fillStyle(tower.config.color, 1);
         g.fillCircle(pos.x, pos.y, half);
@@ -1955,14 +2129,13 @@ class GameScene extends Phaser.Scene {
   // ------------------------- Спрайты башен -------------------------
   // Создаём корпус и пушку башни.
   createTowerSprite(tower) {
-    const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+    const pos = tower.getPosition();
+    const depth = 10 + (tower.gx + tower.gy) * 0.01; // глубина по world (iso)
 
-    // Корпус (стоит на месте). Мост рисуем выше обычных башен (1.5),
-    // чтобы проходящий «юнит» оказывался под мостом, а его пушка (2) — над.
+    // Корпус (стоит на месте).
     const baseKey = this.getBaseTextureKey(tower.typeKey);
     if (baseKey) {
-      const baseDepth = tower.config.isBridge ? 0.9 : 1;
-      tower.baseSprite = this.add.image(pos.x, pos.y, baseKey).setDepth(baseDepth);
+      tower.baseSprite = this.add.image(pos.x, pos.y, baseKey).setDepth(depth);
       this.applyTowerVisual(tower.baseSprite, baseKey, tower.config.footprint);
       tower.baseSprite.setRotation(tower.baseAngle);
     }
@@ -1970,7 +2143,7 @@ class GameScene extends Phaser.Scene {
     // Пушка (вращается к врагу).
     const weaponKey = this.getWeaponTextureKey(tower.typeKey, tower.level);
     if (weaponKey) {
-      tower.sprite = this.add.image(pos.x, pos.y, weaponKey).setDepth(2);
+      tower.sprite = this.add.image(pos.x, pos.y, weaponKey).setDepth(depth + 0.05);
       this.applyTowerVisual(
         tower.sprite,
         weaponKey,
@@ -1982,7 +2155,7 @@ class GameScene extends Phaser.Scene {
 
   // Меняем пушку башни (например, после улучшения уровня).
   refreshTowerSprite(tower) {
-    const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+    const pos = tower.getPosition();
     const weaponKey = this.getWeaponTextureKey(tower.typeKey, tower.level);
 
     if (!weaponKey) {
@@ -1993,10 +2166,12 @@ class GameScene extends Phaser.Scene {
       return;
     }
 
+    const depth = 10 + (tower.gx + tower.gy) * 0.01 + 0.05;
     if (!tower.sprite) {
-      tower.sprite = this.add.image(pos.x, pos.y, weaponKey).setDepth(2);
+      tower.sprite = this.add.image(pos.x, pos.y, weaponKey).setDepth(depth);
     } else {
       tower.sprite.setTexture(weaponKey);
+      tower.sprite.setDepth(depth);
     }
 
     this.applyTowerVisual(
@@ -2101,7 +2276,7 @@ class GameScene extends Phaser.Scene {
   // Переставляем корпус и пушку всех башен (при изменении размера экрана).
   layoutTowerSprites() {
     for (const tower of this.towers) {
-      const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+      const pos = tower.getPosition();
 
       const baseKey = this.getBaseTextureKey(tower.typeKey);
       if (tower.baseSprite && baseKey) {
@@ -2137,28 +2312,34 @@ class GameScene extends Phaser.Scene {
 
   // Ставим корпус и пушку башни в её текущую точку.
   positionTowerSprites(tower) {
-    const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+    const pos = tower.getPosition();
+    const depth = 10 + (tower.gx + tower.gy) * 0.01;
     if (tower.baseSprite) {
       tower.baseSprite.setPosition(pos.x, pos.y);
       tower.baseSprite.setRotation(tower.baseAngle);
+      tower.baseSprite.setDepth(depth);
     }
-    if (tower.sprite) tower.sprite.setPosition(pos.x, pos.y);
+    if (tower.sprite) {
+      tower.sprite.setPosition(pos.x, pos.y);
+      tower.sprite.setDepth(depth + 0.05);
+    }
   }
 
-  // Показать кольцо радиуса атаки (rangeCells — радиус в клетках).
-  showRangeRing(x, y, rangeCells, color) {
+  // Кольцо радиуса атаки: в изометрии круг проецируется в эллипс (2:1).
+  showRangeRing(x, y, rangeUnits, color) {
     const g = this.rangeGraphics;
     g.clear();
-    const radius = rangeCells * this.cellSize;
+    const a = ISO_HW * Math.SQRT2 * rangeUnits; // полуось по X
+    const b = ISO_HH * Math.SQRT2 * rangeUnits; // полуось по Y
     g.fillStyle(color, 0.08);
-    g.fillCircle(x, y, radius);
+    g.fillEllipse(x, y, a * 2, b * 2);
     g.lineStyle(3, color, 0.8);
-    g.strokeCircle(x, y, radius);
+    g.strokeEllipse(x, y, a * 2, b * 2);
   }
 
   // Кольцо радиуса конкретной башни.
   showRangeRingForTower(tower) {
-    const pos = tower.getPosition(this.cellSize, this.offsetX, this.offsetY);
+    const pos = tower.getPosition();
     this.showRangeRing(pos.x, pos.y, tower.range, tower.config.color);
   }
 
@@ -2418,7 +2599,7 @@ class GameScene extends Phaser.Scene {
     const hp = Math.round(base.hp * scale);
     const shield = base.shield ? Math.round(base.shield * scale) : 0;
 
-    const enemy = new Enemy(this, this.pathCells, typeKey, hp, shield);
+    const enemy = new Enemy(this, this.route, typeKey, hp, shield);
     this.enemies.push(enemy);
     this.enemiesLeftToSpawn -= 1;
 
@@ -2448,12 +2629,11 @@ class GameScene extends Phaser.Scene {
     this.showMessage(`Волна ${this.currentWave} зачищена! +${WAVE_CLEAR_BONUS} золота`);
   }
 
-  // Переводим координаты указателя в «клеточные» единицы (центр башни).
+  // Экран -> world: через камеру и централизованный screenToWorld.
   pointerToGrid(pointer) {
-    return {
-      gx: (pointer.x - this.offsetX) / this.cellSize,
-      gy: (pointer.y - this.offsetY) / this.cellSize,
-    };
+    const worldPx = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+    const w = screenToWorld(worldPx.x, worldPx.y);
+    return { gx: w.x, gy: w.y };
   }
 
   // Находим башню под точкой по её кругу (radius).
@@ -2469,20 +2649,14 @@ class GameScene extends Phaser.Scene {
   // Можно ли поставить башню типа type в точку:
   // в пределах поля, не на дороге и не пересекаясь с другими башнями.
   isFreeSpot(gx, gy, type, ignoreTower = null) {
-    // Отступ от края поля и от дороги берём по всему спрайту (size),
-    // иначе крупная башня картинкой «заезжает» на дорогу.
-    const footprint = type.footprint / 2;
+    const radius = type.footprint / 2;
 
-    // Границы игрового поля.
-    if (gx - footprint < 0 || gx + footprint > GRID_SIZE) return false;
-    if (gy - footprint < 0 || gy + footprint > GRID_SIZE) return false;
+    // Границы мира.
+    if (gx - radius < 0 || gx + radius > WORLD_SIZE) return false;
+    if (gy - radius < 0 || gy + radius > WORLD_SIZE) return false;
 
-    // Дорога: спрайт не должен пересекаться с клетками дороги.
-    for (const cell of this.pathCells) {
-      const nearestX = Phaser.Math.Clamp(gx, cell.col, cell.col + 1);
-      const nearestY = Phaser.Math.Clamp(gy, cell.row, cell.row + 1);
-      if (Math.hypot(gx - nearestX, gy - nearestY) < footprint) return false;
-    }
+    // Дорога: расстояние от центра до полилинии Route (источник истины).
+    if (distanceToRoute(gx, gy, this.route) < radius + ROAD_WIDTH / 2) return false;
 
     return !this.overlapsOtherTower(gx, gy, type, ignoreTower);
   }
@@ -2553,7 +2727,7 @@ class GameScene extends Phaser.Scene {
 
     // Клик по пустому месту — закрываем меню.
     this.closeTowerMenu();
-    if (gx < 0 || gx > GRID_SIZE || gy < 0 || gy > GRID_SIZE) return;
+    if (gx < 0 || gx > WORLD_SIZE || gy < 0 || gy > WORLD_SIZE) return;
 
     // Башня не выбрана — ничего не строим.
     if (!this.selectedTowerType) return;
@@ -2630,7 +2804,7 @@ class GameScene extends Phaser.Scene {
     }
 
     const type = this.selectedTowerType ? TOWER_TYPES[this.selectedTowerType] : null;
-    const inside = gx >= 0 && gx <= GRID_SIZE && gy >= 0 && gy <= GRID_SIZE;
+    const inside = gx >= 0 && gx <= WORLD_SIZE && gy >= 0 && gy <= WORLD_SIZE;
 
     if (!type || !inside || this.isGameOver) {
       this.ghost.setVisible(false);
@@ -2656,7 +2830,7 @@ class GameScene extends Phaser.Scene {
       this.ghostWeapon.setVisible(false);
     }
 
-    const pos = { x: this.offsetX + gx * this.cellSize, y: this.offsetY + gy * this.cellSize };
+    const pos = worldToScreen(gx, gy);
     this.ghost.setPosition(pos.x, pos.y);
 
     this.applyGhostAngle();
@@ -2714,10 +2888,7 @@ class GameScene extends Phaser.Scene {
 
     // Режим переноса: кольцо следует за указателем (видно будущее место).
     if (this.movingTower) {
-      const pos = {
-        x: this.offsetX + gx * this.cellSize,
-        y: this.offsetY + gy * this.cellSize,
-      };
+      const pos = worldToScreen(gx, gy);
       this.showRangeRing(pos.x, pos.y, this.movingTower.range, this.movingTower.config.color);
       return;
     }
@@ -2773,10 +2944,10 @@ class GameScene extends Phaser.Scene {
   update(time, delta) {
     if (this.isGameOver) return; // игра остановлена
 
-    // Враги.
+    // Враги (движение — в world-координатах по Route).
     for (const enemy of this.enemies) {
       if (!enemy.isDead) {
-        enemy.moveAlongPath(delta, this.cellSize, this.offsetX, this.offsetY);
+        enemy.moveAlongPath(delta);
       }
     }
 
@@ -2791,7 +2962,7 @@ class GameScene extends Phaser.Scene {
         continue;
       }
 
-      tower.update(delta, this.cellSize, this.offsetX, this.offsetY, this.enemies);
+      tower.update(delta, this.enemies);
       if (tower.sprite) tower.sprite.setRotation(tower.aimAngle);
     }
 
@@ -2800,7 +2971,7 @@ class GameScene extends Phaser.Scene {
 
     // Снаряды.
     for (const projectile of this.projectiles) {
-      projectile.flyToTarget(delta, this.cellSize);
+      projectile.flyToTarget(delta);
     }
 
     // Чистим удалённые объекты.
@@ -2817,8 +2988,6 @@ const config = {
   type: Phaser.AUTO, // WebGL, а при его отсутствии — Canvas
   parent: 'game',
   backgroundColor: BG_COLOR,
-  // Рендер с учётом плотности пикселей экрана — картинка чётче на телефоне.
-  resolution: Math.min(window.devicePixelRatio || 1, 2),
   scale: {
     // RESIZE: canvas всегда занимает весь контейнер (#game = весь экран)
     mode: Phaser.Scale.RESIZE,
