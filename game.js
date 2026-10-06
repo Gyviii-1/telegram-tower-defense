@@ -1254,7 +1254,7 @@ class GameScene extends Phaser.Scene {
         strokeThickness: 3 * DPR,
         fontStyle: 'bold',
       })
-      .setOrigin(0, 0) // якорим к левому верхнему углу
+      .setOrigin(0.5, 0) // верх по центру
       .setInteractive({ useHandCursor: true })
       .setDepth(100);
 
@@ -2110,6 +2110,15 @@ class GameScene extends Phaser.Scene {
         this.pinchDistance = 0;
       }
     });
+
+    // Сброс пинча при отпускании пальца: иначе следующий жест 2 пальцами
+    // берёт устаревшие distance/mid из прошлого раза и резко дёргает камеру.
+    const resetPinch = () => {
+      this.pinchActive = false;
+      this.pinchDistance = 0;
+    };
+    this.input.on('pointerup', resetPinch);
+    this.input.on('pointerupoutside', resetPinch);
   }
 
   // Позиционируем элементы интерфейса под новый размер экрана.
@@ -2120,8 +2129,8 @@ class GameScene extends Phaser.Scene {
     this.uiText.setPosition(width - pad, pad);
     this.uiText.setStyle({ fontSize: `${Math.round(uiSize)}px` });
 
-    // Кнопка старта волны — внизу слева, над панелью постройки.
-    this.startButton.setPosition(pad, height - uiSize * 4.6);
+    // Кнопка старта волны — сверху по центру (не мешает панели постройки внизу).
+    this.startButton.setPosition(width / 2, pad);
     this.startButton.setStyle({ fontSize: `${Math.round(uiSize)}px` });
     this.startButton.setVisible(!this.isWaveActive && !this.isGameOver);
 
