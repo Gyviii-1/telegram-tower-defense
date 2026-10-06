@@ -1188,6 +1188,18 @@ class GameScene extends Phaser.Scene {
           return;
         }
 
+        // Клавиша E (рус. У) улучшает выбранную башню.
+        if (key === 'e' || key === 'у') {
+          if (this.selectedTower) this.upgradeSelectedTower();
+          return;
+        }
+
+        // Клавиша M (рус. Ь) включает режим переноса выбранной башни.
+        if (key === 'm' || key === 'ь') {
+          if (this.selectedTower) this.moveSelectedTower();
+          return;
+        }
+
         const index = parseInt(event.key, 10);
         if (!index) return;
         const keys = Object.keys(TOWER_TYPES);
@@ -1326,12 +1338,17 @@ class GameScene extends Phaser.Scene {
       this.restartGame();
     });
 
-    // Меню башни (улучшение/продажа). Скрыто, пока не выбрана башня.
-    this.towerMenu = this.add.container(0, 0).setDepth(102).setVisible(false);
+    // Меню башни (улучшение/переместить/продажа).
+    // ВАЖНО: без контейнера — интерактив в контейнере со scrollFactor(0)
+    // ломает хит-тест кликов. Делаем прямые объекты, зафиксированные на экране.
+    this.towerMenuOffsets = { bg: 0, title: -72, upgrade: -20, move: 22, sell: 62 };
 
     this.towerMenuBg = this.add
       .rectangle(0, 0, 270, 200, 0x000000, 0.9)
       .setStrokeStyle(2, TOWER_COLOR)
+      .setDepth(102)
+      .setScrollFactor(0)
+      .setVisible(false)
       .setInteractive();
     // Клик по фону меню не должен «проваливаться» в игровое поле.
     this.towerMenuBg.on('pointerdown', (pointer, localX, localY, event) => {
@@ -1339,7 +1356,7 @@ class GameScene extends Phaser.Scene {
     });
 
     this.towerMenuTitle = this.add
-      .text(0, -72, '', {
+      .text(0, 0, '', {
         fontFamily: 'Arial, sans-serif',
         fontSize: '16px',
         color: '#ffffff',
@@ -1347,42 +1364,54 @@ class GameScene extends Phaser.Scene {
         align: 'center',
         lineSpacing: 4,
       })
-      .setOrigin(0.5);
+      .setOrigin(0.5)
+      .setDepth(103)
+      .setScrollFactor(0)
+      .setVisible(false);
 
     this.towerMenuUpgrade = this.add
-      .text(0, -20, '', {
+      .text(0, 0, '', {
         fontFamily: 'Arial, sans-serif',
         fontSize: '18px',
         color: '#2ecc71',
       })
       .setOrigin(0.5)
+      .setDepth(103)
+      .setScrollFactor(0)
+      .setVisible(false)
       .setInteractive({ useHandCursor: true });
 
     this.towerMenuMove = this.add
-      .text(0, 22, '⤢ Переместить', {
+      .text(0, 0, '⤢ Переместить', {
         fontFamily: 'Arial, sans-serif',
         fontSize: '18px',
         color: '#f1c40f',
       })
       .setOrigin(0.5)
+      .setDepth(103)
+      .setScrollFactor(0)
+      .setVisible(false)
       .setInteractive({ useHandCursor: true });
 
     this.towerMenuSell = this.add
-      .text(0, 62, '', {
+      .text(0, 0, '', {
         fontFamily: 'Arial, sans-serif',
         fontSize: '18px',
         color: '#e74c3c',
       })
       .setOrigin(0.5)
+      .setDepth(103)
+      .setScrollFactor(0)
+      .setVisible(false)
       .setInteractive({ useHandCursor: true });
 
-    this.towerMenu.add([
+    this.towerMenuParts = [
       this.towerMenuBg,
       this.towerMenuTitle,
       this.towerMenuUpgrade,
       this.towerMenuMove,
       this.towerMenuSell,
-    ]);
+    ];
 
     this.towerMenuUpgrade.on('pointerdown', (pointer, localX, localY, event) => {
       if (event && event.stopPropagation) event.stopPropagation();
@@ -1420,8 +1449,6 @@ class GameScene extends Phaser.Scene {
       this.overlay,
       this.gameOverText,
       this.restartButton,
-      this.towerMenu,
-      this.buildMenu,
     ];
     for (const obj of fixedUI) {
       if (obj) obj.setScrollFactor(0);
@@ -1501,7 +1528,7 @@ class GameScene extends Phaser.Scene {
     this.startButton.setVisible(false); // убираем кнопку старта волны
     this.restartButton.setVisible(true); // показываем кнопку перезапуска
     this.closeTowerMenu(); // прячем меню башни, если оно было открыто
-    this.buildMenu.setVisible(false); // прячем панель постройки
+    this.setBuildMenuVisible(false); // прячем панель постройки
     this.ghost.setVisible(false); // прячем призрак башни
     this.clearRangeRing(); // убираем кольцо радиуса
 
@@ -1525,16 +1552,20 @@ class GameScene extends Phaser.Scene {
   // Открыть меню выбранной башни.
   openTowerMenu(tower) {
     this.selectedTower = tower;
+    // Сначала показываем все части, затем refreshTowerMenu скрывает ненужные
+    // (например, «Переместить» для моста).
+    for (const part of this.towerMenuParts) part.setVisible(true);
     this.refreshTowerMenu();
     this.positionTowerMenu();
-    this.towerMenu.setVisible(true);
     this.showRangeRingForTower(tower);
   }
 
   // Закрыть меню башни.
   closeTowerMenu() {
     this.selectedTower = null;
-    if (this.towerMenu) this.towerMenu.setVisible(false);
+    if (this.towerMenuParts) {
+      for (const part of this.towerMenuParts) part.setVisible(false);
+    }
     this.clearRangeRing();
   }
 
@@ -1592,7 +1623,13 @@ class GameScene extends Phaser.Scene {
 
     x = Phaser.Math.Clamp(x, halfW + margin, width - halfW - margin);
     y = Phaser.Math.Clamp(y, halfH + margin, height - halfH - margin);
-    this.towerMenu.setPosition(x, y);
+
+    const off = this.towerMenuOffsets;
+    this.towerMenuBg.setPosition(x, y + off.bg);
+    this.towerMenuTitle.setPosition(x, y + off.title);
+    this.towerMenuUpgrade.setPosition(x, y + off.upgrade);
+    this.towerMenuMove.setPosition(x, y + off.move);
+    this.towerMenuSell.setPosition(x, y + off.sell);
   }
 
   // Включаем режим переноса для выбранной башни.
@@ -1658,21 +1695,22 @@ class GameScene extends Phaser.Scene {
   // ------------------------- Панель постройки -------------------------
   // Создаём кнопки выбора типа башни (внизу экрана).
   createBuildMenu() {
-    this.buildMenu = this.add.container(0, 0).setDepth(100);
+    // Без контейнеров: интерактив в контейнере со scrollFactor(0) ломает клики.
+    // Каждая кнопка = отдельные объекты, зафиксированные на экране.
     this.buildButtons = {};
     this.buildButtonWidth = 105;
     this.buildGap = 8;
 
     const buttonWidth = this.buildButtonWidth;
-    const gap = this.buildGap;
 
-    Object.keys(TOWER_TYPES).forEach((key, index) => {
+    Object.keys(TOWER_TYPES).forEach((key) => {
       const type = TOWER_TYPES[key];
-      const button = this.add.container(index * (buttonWidth + gap), 0);
 
       const bg = this.add
         .rectangle(0, 0, buttonWidth, 90, 0x000000, 0.85)
         .setStrokeStyle(2, 0xffffff, 0.4)
+        .setDepth(100)
+        .setScrollFactor(0)
         .setInteractive({ useHandCursor: true });
 
       bg.on('pointerdown', (pointer, localX, localY, event) => {
@@ -1681,26 +1719,34 @@ class GameScene extends Phaser.Scene {
       });
 
       // Иконка = корпус + пушка 1-го уровня.
-      const icon = this.add.container(0, -14);
       const baseKey = this.getBaseTextureKey(key) || type.texture;
-      icon.add(this.add.image(0, 0, baseKey).setDisplaySize(34, 34));
+      const iconBase = this.add
+        .image(0, 0, baseKey)
+        .setDisplaySize(34, 34)
+        .setDepth(101)
+        .setScrollFactor(0);
       const weaponKey = this.getWeaponTextureKey(key, 1);
-      if (weaponKey) {
-        icon.add(this.add.image(0, 0, weaponKey).setDisplaySize(34, 34));
-      }
+      const iconWeapon = weaponKey
+        ? this.add.image(0, 0, weaponKey).setDisplaySize(34, 34).setDepth(101).setScrollFactor(0)
+        : null;
 
       const label = this.add
-        .text(0, 26, `${type.name} · ${type.cost}`, {
+        .text(0, 0, `${type.name} · ${type.cost}`, {
           fontFamily: 'Arial, sans-serif',
           fontSize: '13px',
           color: '#ffffff',
         })
-        .setOrigin(0.5);
+        .setOrigin(0.5)
+        .setDepth(101)
+        .setScrollFactor(0);
 
-      button.add([bg, icon, label]);
-      this.buildMenu.add(button);
-
-      this.buildButtons[key] = { container: button, bg: bg, type: type };
+      this.buildButtons[key] = {
+        bg: bg,
+        iconBase: iconBase,
+        iconWeapon: iconWeapon,
+        label: label,
+        type: type,
+      };
     });
 
     this.refreshBuildMenu();
@@ -1746,8 +1792,25 @@ class GameScene extends Phaser.Scene {
     const y = height - 60;
 
     keys.forEach((key, index) => {
-      this.buildButtons[key].container.setPosition(startX + index * (buttonWidth + gap), y);
+      const x = startX + index * (buttonWidth + gap);
+      const b = this.buildButtons[key];
+      b.bg.setPosition(x, y);
+      b.iconBase.setPosition(x, y - 14);
+      if (b.iconWeapon) b.iconWeapon.setPosition(x, y - 14);
+      b.label.setPosition(x, y + 26);
     });
+  }
+
+  // Показать/скрыть панель постройки целиком (например, на экране поражения).
+  setBuildMenuVisible(visible) {
+    if (!this.buildButtons) return;
+    for (const key in this.buildButtons) {
+      const b = this.buildButtons[key];
+      b.bg.setVisible(visible);
+      b.iconBase.setVisible(visible);
+      if (b.iconWeapon) b.iconWeapon.setVisible(visible);
+      b.label.setVisible(visible);
+    }
   }
 
   // ------------------------- Игровые события -------------------------
@@ -1968,7 +2031,9 @@ class GameScene extends Phaser.Scene {
   }
 
   minZoom() {
-    return this.fitZoom() * 0.5;
+    // Не даём уменьшать карту ниже «целиком в экране»: иначе спрайты
+    // сжимаются сильно и выглядят размыто.
+    return this.fitZoom();
   }
 
   maxZoom() {
@@ -2072,7 +2137,7 @@ class GameScene extends Phaser.Scene {
 
     // Панель постройки башен.
     this.layoutBuildMenu(width, height);
-    this.buildMenu.setVisible(!this.isGameOver);
+    this.setBuildMenuVisible(!this.isGameOver);
 
   }
 
@@ -2991,6 +3056,9 @@ const config = {
   render: {
     // Физическое разрешение canvas соответствует плотности экрана.
     resolution: window.devicePixelRatio || 1,
+    antialias: true,
+    // Мипмапы убирают «мыло» при уменьшении спрайтов (важно на телефоне).
+    mipmapFilter: 'LINEAR_MIPMAP_LINEAR',
   },
   scale: {
     // RESIZE: canvas всегда занимает весь контейнер (#game = весь экран)
