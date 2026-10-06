@@ -164,6 +164,11 @@ const ISO_HW = 64; // половина ширины изотайла (128 / 2)
 const ISO_HH = 32; // половина высоты изотайла (64 / 2)
 const ROAD_WIDTH = 1.0; // ширина дороги в world units
 
+// HiDPI-масштаб: рендерим канвас в физическом разрешении экрана, а UI
+// задаём в «CSS-пикселях», умножая абсолютные размеры на DPR. Ограничиваем
+// двойкой ради производительности на слабых телефонах.
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+
 // ЕДИНОЕ преобразование world <-> экран (iso-пиксели). Больше нигде нет iso-математики.
 function worldToScreen(wx, wy) {
   return { x: (wx - wy) * ISO_HW, y: (wx + wy) * ISO_HH };
@@ -598,7 +603,7 @@ class MenuScene extends Phaser.Scene {
         fontSize: '48px',
         color: '#2ecc71',
         stroke: '#000000',
-        strokeThickness: 6,
+        strokeThickness: 6 * DPR,
         fontStyle: 'bold',
       })
       .setOrigin(0.5);
@@ -636,9 +641,9 @@ class MenuScene extends Phaser.Scene {
         fontSize: '30px',
         color: '#ffffff',
         backgroundColor: '#2ecc71',
-        padding: { x: 30, y: 14 },
+        padding: { x: 30 * DPR, y: 14 * DPR },
         stroke: '#000000',
-        strokeThickness: 3,
+        strokeThickness: 3 * DPR,
         fontStyle: 'bold',
       })
       .setOrigin(0.5)
@@ -654,9 +659,9 @@ class MenuScene extends Phaser.Scene {
         fontSize: '22px',
         color: '#ffffff',
         backgroundColor: '#34495e',
-        padding: { x: 24, y: 10 },
+        padding: { x: 24 * DPR, y: 10 * DPR },
         stroke: '#000000',
-        strokeThickness: 3,
+        strokeThickness: 3 * DPR,
         fontStyle: 'bold',
       })
       .setOrigin(0.5)
@@ -737,7 +742,7 @@ class MenuScene extends Phaser.Scene {
         fontSize: '17px',
         color: '#f1c40f',
         align: 'center',
-        lineSpacing: 4,
+        lineSpacing: 4 * DPR,
       })
       .setOrigin(0.5);
 
@@ -747,7 +752,7 @@ class MenuScene extends Phaser.Scene {
         fontSize: '17px',
         color: '#ffffff',
         align: 'left',
-        lineSpacing: 6,
+        lineSpacing: 6 * DPR,
       })
       .setOrigin(0.5);
 
@@ -762,7 +767,7 @@ class MenuScene extends Phaser.Scene {
         fontSize: '22px',
         color: '#bdc3c7',
         align: 'center',
-        lineSpacing: 8,
+        lineSpacing: 8 * DPR,
       })
       .setOrigin(0.5);
     this.shopPage.add(this.shopText);
@@ -794,7 +799,7 @@ class MenuScene extends Phaser.Scene {
         fontSize: '18px',
         color: '#ffffff',
         align: 'left',
-        lineSpacing: 8,
+        lineSpacing: 8 * DPR,
       })
       .setOrigin(0.5);
 
@@ -804,9 +809,9 @@ class MenuScene extends Phaser.Scene {
         fontSize: '22px',
         color: '#ffffff',
         backgroundColor: '#e74c3c',
-        padding: { x: 24, y: 10 },
+        padding: { x: 24 * DPR, y: 10 * DPR },
         stroke: '#000000',
-        strokeThickness: 3,
+        strokeThickness: 3 * DPR,
         fontStyle: 'bold',
       })
       .setOrigin(0.5)
@@ -826,7 +831,7 @@ class MenuScene extends Phaser.Scene {
         fontSize: '16px',
         color: '#ffffff',
         backgroundColor: '#1f2b3a',
-        padding: { x: 12, y: 8 },
+        padding: { x: 12 * DPR, y: 8 * DPR },
       })
       .setOrigin(0.5)
       .setInteractive({ useHandCursor: true });
@@ -962,8 +967,8 @@ class MenuScene extends Phaser.Scene {
     // Инвентарь
     this.inventoryTitle.setPosition(width / 2, height * 0.22);
     this.inventoryTitle.setStyle({ fontSize: `${Math.round(size * 0.05)}px` });
-    const rowGap = Math.min(size * 0.13, 90);
-    const rowScale = Math.min((width * 0.9) / 320, 1.4);
+    const rowGap = Math.min(size * 0.13, 90 * DPR);
+    const rowScale = Math.min((width * 0.9) / 320, 1.4 * DPR);
     this.inventoryRows.forEach((row, index) => {
       row.setPosition(width / 2, height * 0.32 + index * rowGap);
       row.setScale(rowScale);
@@ -1230,9 +1235,9 @@ class GameScene extends Phaser.Scene {
         fontSize: '20px',
         color: '#ffffff',
         align: 'right',
-        lineSpacing: 6,
+        lineSpacing: 6 * DPR,
         stroke: '#000000',
-        strokeThickness: 4,
+        strokeThickness: 4 * DPR,
       })
       .setOrigin(1, 0) // якорим к правому верхнему углу
       .setDepth(100);
@@ -1244,9 +1249,9 @@ class GameScene extends Phaser.Scene {
         fontSize: '20px',
         color: '#2ecc71',
         backgroundColor: '#00000088',
-        padding: { x: 10, y: 6 },
+        padding: { x: 10 * DPR, y: 6 * DPR },
         stroke: '#000000',
-        strokeThickness: 3,
+        strokeThickness: 3 * DPR,
         fontStyle: 'bold',
       })
       .setOrigin(0, 0) // якорим к левому верхнему углу
@@ -1267,9 +1272,9 @@ class GameScene extends Phaser.Scene {
         fontSize: '18px',
         color: '#ffffff',
         backgroundColor: '#00000088',
-        padding: { x: 10, y: 6 },
+        padding: { x: 10 * DPR, y: 6 * DPR },
         stroke: '#000000',
-        strokeThickness: 3,
+        strokeThickness: 3 * DPR,
       })
       .setOrigin(0, 0)
       .setInteractive({ useHandCursor: true })
@@ -1288,7 +1293,7 @@ class GameScene extends Phaser.Scene {
         fontSize: '20px',
         color: '#f1c40f',
         stroke: '#000000',
-        strokeThickness: 5,
+        strokeThickness: 5 * DPR,
       })
       .setOrigin(0.5)
       .setDepth(100)
@@ -1308,7 +1313,7 @@ class GameScene extends Phaser.Scene {
         fontSize: '64px',
         color: '#e74c3c',
         stroke: '#000000',
-        strokeThickness: 8,
+        strokeThickness: 8 * DPR,
         fontStyle: 'bold',
       })
       .setOrigin(0.5)
@@ -1322,9 +1327,9 @@ class GameScene extends Phaser.Scene {
         fontSize: '28px',
         color: '#ffffff',
         backgroundColor: '#2ecc71',
-        padding: { x: 24, y: 12 },
+        padding: { x: 24 * DPR, y: 12 * DPR },
         stroke: '#000000',
-        strokeThickness: 3,
+        strokeThickness: 3 * DPR,
         fontStyle: 'bold',
       })
       .setOrigin(0.5)
@@ -1341,11 +1346,11 @@ class GameScene extends Phaser.Scene {
     // Меню башни (улучшение/переместить/продажа).
     // ВАЖНО: без контейнера — интерактив в контейнере со scrollFactor(0)
     // ломает хит-тест кликов. Делаем прямые объекты, зафиксированные на экране.
-    this.towerMenuOffsets = { bg: 0, title: -72, upgrade: -20, move: 22, sell: 62 };
+    this.towerMenuOffsets = { bg: 0, title: -72 * DPR, upgrade: -20 * DPR, move: 22 * DPR, sell: 62 * DPR };
 
     this.towerMenuBg = this.add
-      .rectangle(0, 0, 270, 200, 0x000000, 0.9)
-      .setStrokeStyle(2, TOWER_COLOR)
+      .rectangle(0, 0, 270 * DPR, 200 * DPR, 0x000000, 0.9)
+      .setStrokeStyle(2 * DPR, TOWER_COLOR)
       .setDepth(102)
       .setScrollFactor(0)
       .setVisible(false)
@@ -1358,11 +1363,11 @@ class GameScene extends Phaser.Scene {
     this.towerMenuTitle = this.add
       .text(0, 0, '', {
         fontFamily: 'Arial, sans-serif',
-        fontSize: '16px',
+        fontSize: `${16 * DPR}px`,
         color: '#ffffff',
         fontStyle: 'bold',
         align: 'center',
-        lineSpacing: 4,
+        lineSpacing: 4 * DPR,
       })
       .setOrigin(0.5)
       .setDepth(103)
@@ -1372,7 +1377,7 @@ class GameScene extends Phaser.Scene {
     this.towerMenuUpgrade = this.add
       .text(0, 0, '', {
         fontFamily: 'Arial, sans-serif',
-        fontSize: '18px',
+        fontSize: `${18 * DPR}px`,
         color: '#2ecc71',
       })
       .setOrigin(0.5)
@@ -1384,7 +1389,7 @@ class GameScene extends Phaser.Scene {
     this.towerMenuMove = this.add
       .text(0, 0, '⤢ Переместить', {
         fontFamily: 'Arial, sans-serif',
-        fontSize: '18px',
+        fontSize: `${18 * DPR}px`,
         color: '#f1c40f',
       })
       .setOrigin(0.5)
@@ -1396,7 +1401,7 @@ class GameScene extends Phaser.Scene {
     this.towerMenuSell = this.add
       .text(0, 0, '', {
         fontFamily: 'Arial, sans-serif',
-        fontSize: '18px',
+        fontSize: `${18 * DPR}px`,
         color: '#e74c3c',
       })
       .setOrigin(0.5)
@@ -1611,14 +1616,14 @@ class GameScene extends Phaser.Scene {
     const pos = this.worldToUI(tower.gx, tower.gy);
     const width = this.scale.width;
     const height = this.scale.height;
-    const halfW = 135; // половина ширины фона меню (270 / 2)
-    const halfH = 100; // половина высоты фона меню (200 / 2)
-    const margin = 8;
+    const halfW = 135 * DPR; // половина ширины фона меню (270 / 2)
+    const halfH = 100 * DPR; // половина высоты фона меню (200 / 2)
+    const margin = 8 * DPR;
 
     let x = pos.x;
-    let y = pos.y - 70 - halfH; // сначала пробуем над башней
+    let y = pos.y - 70 * DPR - halfH; // сначала пробуем над башней
     if (y - halfH < margin) {
-      y = pos.y + 70 + halfH; // не влезло — ставим под башней
+      y = pos.y + 70 * DPR + halfH; // не влезло — ставим под башней
     }
 
     x = Phaser.Math.Clamp(x, halfW + margin, width - halfW - margin);
@@ -1698,8 +1703,8 @@ class GameScene extends Phaser.Scene {
     // Без контейнеров: интерактив в контейнере со scrollFactor(0) ломает клики.
     // Каждая кнопка = отдельные объекты, зафиксированные на экране.
     this.buildButtons = {};
-    this.buildButtonWidth = 105;
-    this.buildGap = 8;
+    this.buildButtonWidth = 105 * DPR;
+    this.buildGap = 8 * DPR;
 
     const buttonWidth = this.buildButtonWidth;
 
@@ -1707,7 +1712,7 @@ class GameScene extends Phaser.Scene {
       const type = TOWER_TYPES[key];
 
       const bg = this.add
-        .rectangle(0, 0, buttonWidth, 90, 0x000000, 0.85)
+        .rectangle(0, 0, buttonWidth, 90 * DPR, 0x000000, 0.85)
         .setStrokeStyle(2, 0xffffff, 0.4)
         .setDepth(100)
         .setScrollFactor(0)
@@ -1722,18 +1727,18 @@ class GameScene extends Phaser.Scene {
       const baseKey = this.getBaseTextureKey(key) || type.texture;
       const iconBase = this.add
         .image(0, 0, baseKey)
-        .setDisplaySize(34, 34)
+        .setDisplaySize(34 * DPR, 34 * DPR)
         .setDepth(101)
         .setScrollFactor(0);
       const weaponKey = this.getWeaponTextureKey(key, 1);
       const iconWeapon = weaponKey
-        ? this.add.image(0, 0, weaponKey).setDisplaySize(34, 34).setDepth(101).setScrollFactor(0)
+        ? this.add.image(0, 0, weaponKey).setDisplaySize(34 * DPR, 34 * DPR).setDepth(101).setScrollFactor(0)
         : null;
 
       const label = this.add
         .text(0, 0, `${type.name} · ${type.cost}`, {
           fontFamily: 'Arial, sans-serif',
-          fontSize: '13px',
+          fontSize: `${13 * DPR}px`,
           color: '#ffffff',
         })
         .setOrigin(0.5)
@@ -1789,15 +1794,15 @@ class GameScene extends Phaser.Scene {
 
     const totalWidth = keys.length * buttonWidth + (keys.length - 1) * gap;
     const startX = width / 2 - totalWidth / 2 + buttonWidth / 2;
-    const y = height - 60;
+    const y = height - 60 * DPR;
 
     keys.forEach((key, index) => {
       const x = startX + index * (buttonWidth + gap);
       const b = this.buildButtons[key];
       b.bg.setPosition(x, y);
-      b.iconBase.setPosition(x, y - 14);
-      if (b.iconWeapon) b.iconWeapon.setPosition(x, y - 14);
-      b.label.setPosition(x, y + 26);
+      b.iconBase.setPosition(x, y - 14 * DPR);
+      if (b.iconWeapon) b.iconWeapon.setPosition(x, y - 14 * DPR);
+      b.label.setPosition(x, y + 26 * DPR);
     });
   }
 
@@ -2109,8 +2114,8 @@ class GameScene extends Phaser.Scene {
 
   // Позиционируем элементы интерфейса под новый размер экрана.
   layoutUI(width, height) {
-    const pad = Math.max(10, Math.min(width, height) * 0.03);
-    const uiSize = Math.max(16, Math.min(width, height) * 0.05);
+    const pad = Math.max(10 * DPR, Math.min(width, height) * 0.03);
+    const uiSize = Math.max(16 * DPR, Math.min(width, height) * 0.05);
 
     this.uiText.setPosition(width - pad, pad);
     this.uiText.setStyle({ fontSize: `${Math.round(uiSize)}px` });
@@ -3053,7 +3058,7 @@ class GameScene extends Phaser.Scene {
         this.panStart.x,
         this.panStart.y
       );
-      if (moved < 12) return false;
+      if (moved < 12 * DPR) return false;
 
       // Это потяг, а не тап: отменяем установку башни.
       this.panActive = true;
@@ -3180,14 +3185,26 @@ const config = {
     mipmapFilter: 'LINEAR_MIPMAP_LINEAR',
   },
   scale: {
-    // RESIZE: canvas всегда занимает весь контейнер (#game = весь экран)
-    mode: Phaser.Scale.RESIZE,
+    // NONE: размер задаём сами (в физических пикселях) под плотность экрана.
+    // Иначе Phaser рисует в CSS-разрешении, и телефон растягивает картинку.
+    mode: Phaser.Scale.NONE,
     autoCenter: Phaser.Scale.CENTER_BOTH,
-    width: window.innerWidth,
-    height: window.innerHeight,
+    width: window.innerWidth * DPR,
+    height: window.innerHeight * DPR,
+    zoom: 1 / DPR, // стиль канваса = CSS-пиксели (бэкенд-буфер в DPR раз больше)
   },
   scene: [MenuScene, GameScene],
 };
 
 // Запускаем игру.
-new Phaser.Game(config);
+const game = new Phaser.Game(config);
+
+// Держим канвас в физическом разрешении экрана и пересобираем при ресайзе.
+function applyCanvasSize() {
+  if (!game.scale || !game.scale.canvas) return;
+  game.scale.resize(window.innerWidth * DPR, window.innerHeight * DPR);
+}
+window.addEventListener('resize', applyCanvasSize);
+window.addEventListener('orientationchange', () => setTimeout(applyCanvasSize, 200));
+game.events.once('ready', applyCanvasSize);
+applyCanvasSize();
