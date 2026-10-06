@@ -2988,6 +2988,8 @@ const config = {
   type: Phaser.AUTO, // WebGL, а при его отсутствии — Canvas
   parent: 'game',
   backgroundColor: BG_COLOR,
+  // Рендерим canvas с физическим разрешением HiDPI-экрана, чтобы на телефонах не было мыла.
+  resolution: window.devicePixelRatio || 1,
   scale: {
     // RESIZE: canvas всегда занимает весь контейнер (#game = весь экран)
     mode: Phaser.Scale.RESIZE,
