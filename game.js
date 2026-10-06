@@ -2157,22 +2157,74 @@ class GameScene extends Phaser.Scene {
     g.strokePoints(corners, true);
   }
 
-  // Дорога — изополоса вдоль полилинии Route (толщина ROAD_WIDTH).
+  // Дорога — одна цельная изополоса вдоль полилинии Route.
+  // Углы сшиваем «митром» (без зубцов/щелей), концы уводим за границу поля.
+  // Это ТОЛЬКО отрисовка: Route, движение и коллизии не меняются.
   drawRoad() {
     const g = this.roadGraphics;
     g.clear();
-    const half = ROAD_WIDTH / 2;
-    g.fillStyle(ROAD_COLOR, 1);
 
-    for (const seg of this.route.segments) {
-      const nx = -seg.dir.y * half;
-      const ny = seg.dir.x * half;
-      const p1 = worldToScreen(seg.a.x + nx, seg.a.y + ny);
-      const p2 = worldToScreen(seg.b.x + nx, seg.b.y + ny);
-      const p3 = worldToScreen(seg.b.x - nx, seg.b.y - ny);
-      const p4 = worldToScreen(seg.a.x - nx, seg.a.y - ny);
-      g.fillPoints([p1, p2, p3, p4], true);
+    const src = this.route.waypoints;
+    if (!src || src.length < 2) return;
+
+    const half = ROAD_WIDTH / 2;
+    const norm = (x, y) => {
+      const l = Math.hypot(x, y) || 1;
+      return { x: x / l, y: y / l };
+    };
+
+    // Копия точек маршрута; первый и последний отрезки удлиняем наружу.
+    const pts = src.map((p) => ({ x: p.x, y: p.y }));
+    const extend = 1.0;
+    const first = norm(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+    pts[0] = { x: pts[0].x - first.x * extend, y: pts[0].y - first.y * extend };
+    const lastDir = norm(
+      pts[pts.length - 1].x - pts[pts.length - 2].x,
+      pts[pts.length - 1].y - pts[pts.length - 2].y
+    );
+    pts[pts.length - 1] = {
+      x: pts[pts.length - 1].x + lastDir.x * extend,
+      y: pts[pts.length - 1].y + lastDir.y * extend,
+    };
+
+    const left = [];
+    const right = [];
+    for (let i = 0; i < pts.length; i++) {
+      let ox;
+      let oy;
+      if (i === 0) {
+        const d = norm(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+        ox = -d.y;
+        oy = d.x;
+      } else if (i === pts.length - 1) {
+        const d = norm(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+        ox = -d.y;
+        oy = d.x;
+      } else {
+        // Биссектриса нормалей соседних отрезков + компенсация длины (митр).
+        const d0 = norm(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y);
+        const d1 = norm(pts[i + 1].x - pts[i].x, pts[i + 1].y - pts[i].y);
+        const n0x = -d0.y;
+        const n0y = d0.x;
+        const n1x = -d1.y;
+        const n1y = d1.x;
+        let mx = n0x + n1x;
+        let my = n0y + n1y;
+        const ml = Math.hypot(mx, my) || 1;
+        mx /= ml;
+        my /= ml;
+        const cosHalf = mx * n0x + my * n0y;
+        const scale = Phaser.Math.Clamp(cosHalf !== 0 ? 1 / cosHalf : 1, -3, 3);
+        ox = mx * scale;
+        oy = my * scale;
+      }
+      left.push(worldToScreen(pts[i].x + ox * half, pts[i].y + oy * half));
+      right.push(worldToScreen(pts[i].x - ox * half, pts[i].y - oy * half));
     }
+
+    right.reverse();
+    g.fillStyle(ROAD_COLOR, 1);
+    g.fillPoints([...left, ...right], true);
   }
 
   // Рисуем башни по массиву towers.
@@ -3054,8 +3106,6 @@ const config = {
   parent: 'game',
   backgroundColor: BG_COLOR,
   render: {
-    // Физическое разрешение canvas соответствует плотности экрана.
-    resolution: window.devicePixelRatio || 1,
     antialias: true,
     // Мипмапы убирают «мыло» при уменьшении спрайтов (важно на телефоне).
     mipmapFilter: 'LINEAR_MIPMAP_LINEAR',
