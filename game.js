@@ -2031,9 +2031,9 @@ class GameScene extends Phaser.Scene {
   }
 
   minZoom() {
-    // Не даём уменьшать карту ниже «целиком в экране»: иначе спрайты
-    // сжимаются сильно и выглядят размыто.
-    return this.fitZoom();
+    // Даём отдалять карту дальше «целиком в экране» (иначе на ПК зум
+    // не отдаляется вообще: стартовый зум уже равен минимуму).
+    return this.fitZoom() * 0.5;
   }
 
   maxZoom() {
@@ -2061,6 +2061,12 @@ class GameScene extends Phaser.Scene {
     this.pinchDistance = 0;
     this.pinchActive = false;
     this.pinchMid = { x: 0, y: 0 };
+
+    // Состояние панорамирования одним пальцем.
+    this.panArmed = false;
+    this.panActive = false;
+    this.panStart = { x: 0, y: 0 };
+    this.panLast = { x: 0, y: 0 };
 
     this.input.on('pointermove', () => {
       const p1 = this.input.pointer1;
@@ -2090,6 +2096,10 @@ class GameScene extends Phaser.Scene {
         this.pinchMid.x = midX;
         this.pinchMid.y = midY;
         this.pinchActive = true;
+
+        // Два пальца — режим пинча, одиночный пан выключаем.
+        this.panArmed = false;
+        this.panActive = false;
       } else {
         this.pinchActive = false;
         this.pinchDistance = 0;
@@ -2810,6 +2820,11 @@ class GameScene extends Phaser.Scene {
   handlePointerDown(pointer) {
     if (this.isGameOver) return;
 
+    // Сбрасываем состояние панорамирования; «вооружим» его ниже, если
+    // нажали по пустому месту (на UI-элементах scene-событие не приходит).
+    this.panArmed = false;
+    this.panActive = false;
+
     // ПКМ — полностью отменяем: перенос, установку и выбор башни.
     if (pointer.rightButtonDown()) {
       this.cancelAll();
@@ -2845,6 +2860,11 @@ class GameScene extends Phaser.Scene {
     // Клик по пустому месту — закрываем меню.
     this.closeTowerMenu();
     if (gx < 0 || gx > WORLD_SIZE || gy < 0 || gy > WORLD_SIZE) return;
+
+    // Пустое место: разрешаем панорамирование одним пальцем/мышью.
+    this.panArmed = true;
+    this.panStart.x = pointer.x;
+    this.panStart.y = pointer.y;
 
     // Башня не выбрана — ничего не строим.
     if (!this.selectedTowerType) return;
@@ -2978,6 +2998,9 @@ class GameScene extends Phaser.Scene {
   handlePointerMove(pointer) {
     if (this.isGameOver) return;
 
+    // Одним пальцем/мышью — панорамируем камеру (если потянули по пустому месту).
+    if (this.handlePan(pointer)) return;
+
     const { gx, gy } = this.pointerToGrid(pointer);
 
     // Тащим существующую башню.
@@ -3014,8 +3037,51 @@ class GameScene extends Phaser.Scene {
     this.updateGhost(gx, gy);
   }
 
+  // Панорамирование одним пальцем/мышью. true — если камера сдвинулась
+  // (тогда не показываем призрак башни и не строим по отпусканию).
+  handlePan(pointer) {
+    if (!this.panArmed || this.pinchActive || this.dragTower || this.movingTower) {
+      return false;
+    }
+    if (!pointer.isDown) return false;
+
+    // Ещё не определились: ждём, пока потянут дальше порога.
+    if (!this.panActive) {
+      const moved = Phaser.Math.Distance.Between(
+        pointer.x,
+        pointer.y,
+        this.panStart.x,
+        this.panStart.y
+      );
+      if (moved < 12) return false;
+
+      // Это потяг, а не тап: отменяем установку башни.
+      this.panActive = true;
+      if (this.isPlacing) {
+        this.isPlacing = false;
+        if (this.ghost) this.ghost.setVisible(false);
+      }
+      this.clearRangeRing();
+      this.panLast.x = pointer.x;
+      this.panLast.y = pointer.y;
+      return true;
+    }
+
+    const cam = this.cameras.main;
+    cam.scrollX -= (pointer.x - this.panLast.x) / cam.zoom;
+    cam.scrollY -= (pointer.y - this.panLast.y) / cam.zoom;
+    this.panLast.x = pointer.x;
+    this.panLast.y = pointer.y;
+    return true;
+  }
+
   // Отпускание: завершаем перетаскивание башни или ставим новую.
   handlePointerUp(pointer) {
+    // Сбрасываем панорамирование. Если панорамировали — тап не выполняем.
+    const wasPanning = this.panActive;
+    this.panArmed = false;
+    this.panActive = false;
+
     // Перетаскивание существующей башни.
     if (this.dragTower) {
       const tower = this.dragTower;
@@ -3041,6 +3107,9 @@ class GameScene extends Phaser.Scene {
       if (this.selectedTower === tower) this.positionTowerMenu();
       return;
     }
+
+    // Если был потяг (панорамирование) — это не тап, ничего не строим.
+    if (wasPanning) return;
 
     // Установка новой башни: строим там, где отпустили палец/мышь.
     if (this.isPlacing) {
