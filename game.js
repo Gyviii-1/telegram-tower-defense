@@ -1244,7 +1244,7 @@ class GameScene extends Phaser.Scene {
 
     // Кнопка запуска следующей волны (левый верхний угол).
     this.startButton = this.add
-      .text(0, 0, '[ СТАРТ ВОЛНЫ ]', {
+      .text(0, 0, 'СТАРТ', {
         fontFamily: 'Arial, sans-serif',
         fontSize: '20px',
         color: '#2ecc71',
@@ -2129,8 +2129,11 @@ class GameScene extends Phaser.Scene {
     this.uiText.setPosition(width - pad, pad);
     this.uiText.setStyle({ fontSize: `${Math.round(uiSize)}px` });
 
-    // Кнопка старта волны — сверху по центру (не мешает панели постройки внизу).
-    this.startButton.setPosition(width / 2, pad);
+    // Кнопка старта волны — сверху по центру. На телефоне опускаем ниже,
+    // чтобы не упиралась в шапку Telegram / верхний отступ.
+    const isTouch = this.game.device.input.touch;
+    const startY = isTouch ? pad + uiSize * 2.5 : pad;
+    this.startButton.setPosition(width / 2, startY);
     this.startButton.setStyle({ fontSize: `${Math.round(uiSize)}px` });
     this.startButton.setVisible(!this.isWaveActive && !this.isGameOver);
 
