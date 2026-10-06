@@ -1115,7 +1115,8 @@ class GameScene extends Phaser.Scene {
     // Мосты, исчерпавшие лимит (ломаются в конце кадра).
     this.brokenBridges = [];
     // Тип башни, который строим по клику (переключается панелью внизу).
-    this.selectedTowerType = 'gunner';
+    // По умолчанию НИЧЕГО не выбрано — игрок выбирает башню сам.
+    this.selectedTowerType = null;
     // Угол поворота призрака при постройке (крутится до установки).
     this.buildAngle = 0;
 
@@ -1437,7 +1438,9 @@ class GameScene extends Phaser.Scene {
     this.createBuildMenu();
 
     // «Призрак» башни (корпус + пушка), следующий за указателем.
-    const ghostType = TOWER_TYPES[this.selectedTowerType];
+    // Изначально текстура-заглушка (gunner), т.к. башня не выбрана; при
+    // выборе типа updateGhost подставит нужную картинку.
+    const ghostType = TOWER_TYPES[this.selectedTowerType] || TOWER_TYPES.gunner;
     this.ghostBase = this.add.image(0, 0, ghostType.baseTexture).setAlpha(0.6);
     this.ghostWeapon = this.add.image(0, 0, ghostType.baseTexture).setAlpha(0.6);
     this.ghost = this.add
