@@ -553,6 +553,7 @@ class Tower {
   // С шансом (1 - accuracy) выстрел уходит в «разброс» и не наносит урон.
   shoot(pos, target) {
     const willHit = Math.random() < this.accuracy;
+    this.scene.playSfx('sfx_shot', 0.25);
     const projectile = new Projectile(this.scene, pos.x, pos.y, target, this.damage, willHit);
     this.scene.projectiles.push(projectile);
   }
@@ -1074,6 +1075,11 @@ class GameScene extends Phaser.Scene {
       }
     }
 
+    // Звуки (mp3). Если файла нет — игра просто идёт без этого звука.
+    this.load.audio('sfx_shot', 'assets/shot.mp3');
+    this.load.audio('sfx_wave', 'assets/wave.mp3');
+    this.load.audio('sfx_gameover', 'assets/gameover.mp3');
+
     // Если спрайта уровня ещё нет — это не ошибка, используем базовую картинку.
     this.load.on('loaderror', (file) => {
       if (file && /_\d+$/.test(file.key)) return;
@@ -1495,6 +1501,13 @@ class GameScene extends Phaser.Scene {
     });
   }
 
+  // Проиграть звук, если файл реально загрузился (иначе — тишина).
+  playSfx(key, volume = 0.5) {
+    if (this.cache.audio.exists(key)) {
+      this.sound.play(key, { volume });
+    }
+  }
+
   // Экран поражения.
   showGameOver() {
     this.overlay.setVisible(true);
@@ -1813,6 +1826,7 @@ class GameScene extends Phaser.Scene {
     if (this.isGameOver) return;
 
     this.isGameOver = true;
+    this.playSfx('sfx_gameover', 0.6);
     if (this.waveSpawnTimer) this.waveSpawnTimer.remove(false); // прекращаем спавн
     this.showGameOver();
     console.log('GAME OVER');
@@ -2529,6 +2543,7 @@ class GameScene extends Phaser.Scene {
 
     this.currentWave += 1;
     this.isWaveActive = true;
+    this.playSfx('sfx_wave', 0.5);
     this.startButton.setVisible(false); // кнопка скрыта во время волны
 
     // Собираем состав волны и берём из него количество врагов.
