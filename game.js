@@ -44,6 +44,9 @@ const TOWER_TYPES = {
     baseTexture: 'tower', // корпус (стоит на месте)
     texture: 'tower', // запасная картинка
     color: 0x2ecc71,
+    baseOrigin: { x: 0.5, y: 1.0 }, // опора корпуса — ноги (низ-центр картинки)
+    gunOrigin: { x: 0.5, y: 0.5 },  // опора пушки — точка крепления в картинке
+    gunMount: { x: 0, y: -0.12 },   // сдвиг пушки от центра башни (в долях клетки)
   },
   minigun: {
     name: 'Миниган',
@@ -57,6 +60,9 @@ const TOWER_TYPES = {
     baseTexture: 'tower_minigun', // корпус (стоит на месте)
     texture: 'tower_minigun', // запасная картинка
     color: 0x3498db,
+    baseOrigin: { x: 0.5, y: 1.0 },
+    gunOrigin: { x: 0.5, y: 0.5 },
+    gunMount: { x: 0, y: -0.15 },
   },
   bridge: {
     name: 'Мост',
@@ -174,6 +180,43 @@ function worldToScreen(wx, wy) {
 }
 function screenToWorld(sx, sy) {
   return { x: (sx / ISO_HW + sy / ISO_HH) / 2, y: (sy / ISO_HH - sx / ISO_HW) / 2 };
+}
+
+// ----------------------------- Направления (8 сторон) -----------------------------
+// Порядок = экранные углы (y вниз): 0° вправо, 45° вправо-вниз, 90° вперёд(вниз),
+// 135° влево-вниз, 180° влево, 225° влево-вверх, 270° назад(вверх), 315° вправо-вверх.
+// Спрайты рисуются в этих ЭКРАННЫХ направлениях (диагонали — экранные 45°).
+const DIRECTIONS = ['r', 'fr', 'f', 'fl', 'l', 'bl', 'b', 'br'];
+const DIR_FORWARD = 'f';        // направление по умолчанию (вниз, на камеру)
+const DIR_STEP = Math.PI / 4;   // сектор 45°
+const DIR_HYSTERESIS = 0.15;    // ~8.6°: зона стабилизации у границы сектора
+
+// Угол (радианы) для направления.
+function dirToAngle(dir) {
+  const i = DIRECTIONS.indexOf(dir);
+  return (i < 0 ? DIRECTIONS.indexOf(DIR_FORWARD) : i) * DIR_STEP;
+}
+
+// Кратчайшая разница углов в диапазоне (-π, π].
+function angleDiff(a, b) {
+  let d = a - b;
+  while (d > Math.PI) d -= Math.PI * 2;
+  while (d < -Math.PI) d += Math.PI * 2;
+  return d;
+}
+
+// Ближайшее из 8 направлений. С гистерезисом держим текущее, пока угол не ушёл
+// за границу сектора на DIR_HYSTERESIS — чтобы не дёргалось на стыках.
+function angleToDir(angle, current) {
+  let idx = Math.round(angle / DIR_STEP);
+  idx = ((idx % 8) + 8) % 8;
+  if (current) {
+    const ci = DIRECTIONS.indexOf(current);
+    if (ci !== -1 && Math.abs(angleDiff(angle, ci * DIR_STEP)) <= DIR_STEP / 2 + DIR_HYSTERESIS) {
+      return current;
+    }
+  }
+  return DIRECTIONS[idx];
 }
 
 // Непрерывный маршрут в world-координатах (центры клеток старого пути).
@@ -464,7 +507,9 @@ class Tower {
     this.cooldown = 0;               // время до следующего выстрела, сек
     this.totalSpent = type.cost;     // сколько золота вложено (для продажи)
     this.aimAngle = 0;               // куда направлена пушка (радианы)
-    this.baseAngle = 0;              // поворот корпуса (радианы)
+    this.aimDir = DIR_FORWARD;       // направление пушки (одно из 8)
+    this.baseAngle = dirToAngle(DIR_FORWARD); // направление корпуса (радианы)
+    this.baseDir = DIR_FORWARD;      // направление корпуса (одно из 8)
     this.sprite = null;              // картинка пушки (вращается)
     this.baseSprite = null;          // картинка корпуса (стоит на месте)
 
@@ -506,14 +551,23 @@ class Tower {
 
   // Обновление башни: перезарядка, поиск цели, выстрел.
   update(delta, enemies) {
+    if (this.config.isBridge) return; // мост не наводится и не стреляет
+
     this.cooldown -= delta / 1000;
 
     const pos = this.getPosition();
     const target = this.findTarget(enemies);
 
-    // Наводим пушку на цель (визуально — по экранным позициям).
+    // Наводим пушку на цель (визуально — по экранным позициям) и поворачиваем корпус.
     if (target) {
       this.aimAngle = Math.atan2(target.y - pos.y, target.x - pos.x);
+      this.aimDir = angleToDir(this.aimAngle, this.aimDir);
+      this.baseAngle = this.aimAngle;
+      this.baseDir = angleToDir(this.baseAngle, this.baseDir);
+    } else {
+      // Нет цели — корпус смотрит вперёд по умолчанию.
+      this.baseAngle = dirToAngle(DIR_FORWARD);
+      this.baseDir = DIR_FORWARD;
     }
 
     // Стреляем, только если башня умеет стрелять, есть цель и она перезарядилась.
@@ -1005,6 +1059,8 @@ class MenuScene extends Phaser.Scene {
   }
 
   getBaseTextureKey(typeKey) {
+    const dirKey = `${typeKey}_base_${DIR_FORWARD}`;
+    if (this.textures.exists(dirKey)) return dirKey;
     const key = `${typeKey}_base`;
     if (this.textures.exists(key)) return key;
     const fallback = TOWER_TYPES[typeKey].baseTexture;
@@ -1012,6 +1068,8 @@ class MenuScene extends Phaser.Scene {
   }
 
   getWeaponTextureKey(typeKey, level) {
+    const dirKey = `${typeKey}_gun_${level}_${DIR_FORWARD}`;
+    if (this.textures.exists(dirKey)) return dirKey;
     for (let current = level; current >= 1; current--) {
       const key = `${typeKey}_${current}`;
       if (this.textures.exists(key)) return key;
@@ -1075,14 +1133,33 @@ class GameScene extends Phaser.Scene {
       }
     }
 
+    // Направленные спрайты (8 сторон): корпус и пушка. Если файлов ещё нет —
+    // они просто не загрузятся, игра идёт на старых спрайтах (fallback).
+    for (const key in TOWER_TYPES) {
+      if (TOWER_TYPES[key].isBridge) continue; // у моста направлений нет
+      for (const dir of DIRECTIONS) {
+        this.load.image(`${key}_base_${dir}`, `assets/${key}_base_${dir}.png`);
+        for (let level = 1; level <= TOWER_MAX_LEVEL; level++) {
+          this.load.image(`${key}_gun_${level}_${dir}`, `assets/${key}_gun_${level}_${dir}.png`);
+        }
+      }
+    }
+
     // Звуки (mp3). Если файла нет — игра просто идёт без этого звука.
     this.load.audio('sfx_shot', 'assets/shot.mp3');
     this.load.audio('sfx_wave', 'assets/wave.mp3');
     this.load.audio('sfx_gameover', 'assets/gameover.mp3');
 
-    // Если спрайта уровня ещё нет — это не ошибка, используем базовую картинку.
+    // Если спрайта уровня/направления ещё нет — это не ошибка.
     this.load.on('loaderror', (file) => {
-      if (file && /_\d+$/.test(file.key)) return;
+      if (
+        file &&
+        (/_\d+$/.test(file.key) ||
+          /_base_[a-z]+$/.test(file.key) ||
+          /_gun_\d+_[a-z]+$/.test(file.key))
+      ) {
+        return;
+      }
       console.warn('Не загрузился файл:', file && file.key);
     });
   }
@@ -1115,8 +1192,6 @@ class GameScene extends Phaser.Scene {
     // Тип башни, который строим по клику (переключается панелью внизу).
     // По умолчанию НИЧЕГО не выбрано — игрок выбирает башню сам.
     this.selectedTowerType = null;
-    // Угол поворота призрака при постройке (крутится до установки).
-    this.buildAngle = 0;
 
     // Кэш замеров картинок: где у них непрозрачная часть и её центр.
     // Заполняется лениво (при первом использовании текстуры).
@@ -1181,12 +1256,6 @@ class GameScene extends Phaser.Scene {
         const key = (event.key || '').toLowerCase();
         if (key === 'x' || key === 'ч') {
           if (this.selectedTower) this.sellSelectedTower();
-          return;
-        }
-
-        // Клавиша R (рус. К) поворачивает призрак будущей башни.
-        if (key === 'r' || key === 'к') {
-          if (this.selectedTowerType) this.rotateBuild();
           return;
         }
 
@@ -1616,18 +1685,6 @@ class GameScene extends Phaser.Scene {
     this.towerMenuSell.setPosition(x, y + off.sell);
   }
 
-  // Повернуть призрак будущей башни на 90° (до постройки).
-  rotateBuild() {
-    this.buildAngle = (this.buildAngle + Math.PI / 2) % (Math.PI * 2);
-    this.applyGhostAngle();
-  }
-
-  // Применяем угол постройки к призраку.
-  applyGhostAngle() {
-    if (this.ghostBase) this.ghostBase.setRotation(this.buildAngle);
-    if (this.ghostWeapon) this.ghostWeapon.setRotation(this.buildAngle);
-  }
-
   // Улучшить выбранную башню за золото.
   upgradeSelectedTower() {
     const tower = this.selectedTower;
@@ -1688,16 +1745,17 @@ class GameScene extends Phaser.Scene {
         this.selectTowerType(key);
       });
 
-      // Иконка = корпус + пушка 1-го уровня.
-      const baseKey = this.getBaseTextureKey(key) || type.texture;
+      // Иконка = корпус + пушка 1-го уровня (направление по умолчанию — вперёд).
+      const base = this.resolveBase(key, DIR_FORWARD);
+      const baseKey = (base && base.key) || type.texture;
       const iconBase = this.add
         .image(0, 0, baseKey)
         .setDisplaySize(34 * DPR, 34 * DPR)
         .setDepth(101)
         .setScrollFactor(0);
-      const weaponKey = this.getWeaponTextureKey(key, 1);
-      const iconWeapon = weaponKey
-        ? this.add.image(0, 0, weaponKey).setDisplaySize(34 * DPR, 34 * DPR).setDepth(101).setScrollFactor(0)
+      const gun = this.resolveGun(key, 1, DIR_FORWARD);
+      const iconWeapon = gun
+        ? this.add.image(0, 0, gun.key).setDisplaySize(34 * DPR, 34 * DPR).setDepth(101).setScrollFactor(0)
         : null;
 
       const label = this.add
@@ -1725,9 +1783,7 @@ class GameScene extends Phaser.Scene {
   // Выбрать тип башни для постройки. Повторный клик по выбранной — снять выбор.
   selectTowerType(key) {
     this.selectedTowerType = this.selectedTowerType === key ? null : key;
-    this.buildAngle = 0; // новый выбор — угол сбрасываем
     this.refreshBuildMenu();
-    this.applyGhostAngle();
     if (!this.selectedTowerType) this.cancelPlacement();
   }
 
@@ -2242,33 +2298,67 @@ class GameScene extends Phaser.Scene {
     const pos = tower.getPosition();
     const depth = 10 + (tower.gx + tower.gy) * 0.01; // глубина по world (iso)
 
-    // Корпус (стоит на месте).
-    const baseKey = this.getBaseTextureKey(tower.typeKey);
-    if (baseKey) {
-      tower.baseSprite = this.add.image(pos.x, pos.y, baseKey).setDepth(depth);
-      this.applyTowerVisual(tower.baseSprite, baseKey, tower.config.footprint);
-      tower.baseSprite.setRotation(tower.baseAngle);
+    const base = this.resolveBase(tower.typeKey, tower.baseDir);
+    if (base) {
+      tower.baseSprite = this.add.image(pos.x, pos.y, base.key).setDepth(depth);
+      this.applyBaseVisual(tower.baseSprite, tower.typeKey, base);
     }
 
-    // Пушка (вращается к врагу).
-    const weaponKey = this.getWeaponTextureKey(tower.typeKey, tower.level);
-    if (weaponKey) {
-      tower.sprite = this.add.image(pos.x, pos.y, weaponKey).setDepth(depth + 0.05);
-      this.applyTowerVisual(
-        tower.sprite,
-        weaponKey,
-        tower.config.footprint,
-        tower.config.weaponScale
-      );
+    const gun = this.resolveGun(tower.typeKey, tower.level, tower.aimDir);
+    if (gun) {
+      tower.sprite = this.add.image(pos.x, pos.y, gun.key).setDepth(depth + 0.05);
+      this.applyGunVisual(tower.sprite, tower.typeKey, gun);
+    }
+
+    this.applyTowerFacing(tower);
+  }
+
+  // Переключаем текстуры корпуса и пушки по их ТЕКУЩИМ направлениям
+  // (корпус и пушка — независимо). Направленные спрайты НЕ вращаем.
+  applyTowerFacing(tower) {
+    const pos = tower.getPosition();
+    const type = tower.config;
+
+    if (tower.baseSprite) {
+      const base = this.resolveBase(tower.typeKey, tower.baseDir);
+      if (base) {
+        if (tower.baseSprite.texture.key !== base.key) {
+          tower.baseSprite.setTexture(base.key);
+          this.applyBaseVisual(tower.baseSprite, tower.typeKey, base);
+        }
+        tower.baseSprite.setPosition(pos.x, pos.y);
+        tower.baseSprite.setRotation(base.directional ? 0 : tower.baseAngle);
+      }
+    }
+
+    if (tower.sprite) {
+      const gun = this.resolveGun(tower.typeKey, tower.level, tower.aimDir);
+      if (gun) {
+        if (tower.sprite.texture.key !== gun.key) {
+          tower.sprite.setTexture(gun.key);
+          this.applyGunVisual(tower.sprite, tower.typeKey, gun);
+        }
+        const mount = type.gunMount || { x: 0, y: 0 };
+        if (gun.directional) {
+          // Крепим в точке mount от центра башни и не вращаем.
+          tower.sprite.setPosition(
+            pos.x + mount.x * this.cellSize,
+            pos.y + mount.y * this.cellSize
+          );
+          tower.sprite.setRotation(0);
+        } else {
+          tower.sprite.setPosition(pos.x, pos.y);
+          tower.sprite.setRotation(tower.aimAngle);
+        }
+      }
     }
   }
 
   // Меняем пушку башни (например, после улучшения уровня).
   refreshTowerSprite(tower) {
-    const pos = tower.getPosition();
-    const weaponKey = this.getWeaponTextureKey(tower.typeKey, tower.level);
+    const gun = this.resolveGun(tower.typeKey, tower.level, tower.aimDir);
 
-    if (!weaponKey) {
+    if (!gun) {
       if (tower.sprite) {
         tower.sprite.destroy();
         tower.sprite = null;
@@ -2276,42 +2366,79 @@ class GameScene extends Phaser.Scene {
       return;
     }
 
-    const depth = 10 + (tower.gx + tower.gy) * 0.01 + 0.05;
     if (!tower.sprite) {
-      tower.sprite = this.add.image(pos.x, pos.y, weaponKey).setDepth(depth);
-    } else {
-      tower.sprite.setTexture(weaponKey);
-      tower.sprite.setDepth(depth);
+      const pos = tower.getPosition();
+      const depth = 10 + (tower.gx + tower.gy) * 0.01 + 0.05;
+      tower.sprite = this.add.image(pos.x, pos.y, gun.key).setDepth(depth);
+      this.applyGunVisual(tower.sprite, tower.typeKey, gun);
     }
 
-    this.applyTowerVisual(
-      tower.sprite,
-      weaponKey,
-      tower.config.footprint,
-      tower.config.weaponScale
-    );
-    tower.sprite.setPosition(pos.x, pos.y);
-    tower.sprite.setRotation(tower.aimAngle);
+    this.applyTowerFacing(tower);
   }
 
-  // Ключ картинки корпуса: "gunner_base", иначе запасная картинка типа.
-  getBaseTextureKey(typeKey) {
-    const key = `${typeKey}_base`;
-    if (this.textures.exists(key)) return key;
+  // Ключ корпуса: направленный "<type>_base_<dir>" → старый "<type>_base"
+  // → запасная картинка типа. directional=true → не вращать.
+  resolveBase(typeKey, dir) {
+    const dirKey = `${typeKey}_base_${dir}`;
+    if (this.textures.exists(dirKey)) return { key: dirKey, directional: true };
+
+    const legacyKey = `${typeKey}_base`;
+    if (this.textures.exists(legacyKey)) return { key: legacyKey, directional: false };
 
     const fallback = TOWER_TYPES[typeKey].baseTexture;
-    return this.textures.exists(fallback) ? fallback : null;
+    if (this.textures.exists(fallback)) return { key: fallback, directional: false };
+    return null;
   }
 
-  // Ключ картинки пушки для уровня: "gunner_3".
-  // Если спрайта этого уровня нет — берём ближайший предыдущий.
-  // Если пушек нет вообще — null (башня без пушки).
-  getWeaponTextureKey(typeKey, level) {
+  // Ключ пушки: "<type>_gun_<level>_<dir>" (не вращается) → старый
+  // "<type>_<level>" (вращается, ближайший доступный уровень) → null.
+  resolveGun(typeKey, level, dir) {
+    const dirKey = `${typeKey}_gun_${level}_${dir}`;
+    if (this.textures.exists(dirKey)) return { key: dirKey, directional: true };
+
     for (let current = level; current >= 1; current--) {
       const key = `${typeKey}_${current}`;
-      if (this.textures.exists(key)) return key;
+      if (this.textures.exists(key)) return { key: key, directional: false };
     }
     return null;
+  }
+
+  // Вписываем корпус: направленный — фиксированная опора (ноги, низ-центр),
+  // старый — авто-центр по непрозрачной части (как раньше).
+  applyBaseVisual(image, typeKey, base) {
+    const type = TOWER_TYPES[typeKey];
+    const contentPx = this.cellSize * type.footprint;
+    if (base.directional) {
+      const o = type.baseOrigin || { x: 0.5, y: 1.0 };
+      this.applyDirectionalVisual(image, base.key, contentPx, o.x, o.y);
+    } else {
+      this.applyTowerVisual(image, base.key, type.footprint);
+    }
+  }
+
+  // Вписываем пушку: направленная — фиксированная опора (точка крепления).
+  applyGunVisual(image, typeKey, gun) {
+    const type = TOWER_TYPES[typeKey];
+    const contentPx = this.cellSize * type.footprint * (type.weaponScale || 1);
+    if (gun.directional) {
+      const o = type.gunOrigin || { x: 0.5, y: 0.5 };
+      this.applyDirectionalVisual(image, gun.key, contentPx, o.x, o.y);
+    } else {
+      this.applyTowerVisual(image, gun.key, type.footprint, type.weaponScale);
+    }
+  }
+
+  // Направленный спрайт: размер считаем по непрозрачной части, но точку опоры
+  // берём ФИКСИРОВАННУЮ — иначе при смене направления спрайт «прыгает».
+  applyDirectionalVisual(image, key, contentPx, originX, originY) {
+    image.setOrigin(originX, originY);
+    const visual = this.getVisual(key);
+    if (visual && visual.fraction > 0) {
+      const wholePx = contentPx / visual.fraction;
+      image.setDisplaySize(wholePx, wholePx);
+    } else {
+      image.setDisplaySize(contentPx, contentPx);
+    }
   }
 
   // Вписываем картинку башни в её footprint и ставим точку опоры в центр
@@ -2385,27 +2512,7 @@ class GameScene extends Phaser.Scene {
 
   // Переставляем корпус и пушку всех башен (при изменении размера экрана).
   layoutTowerSprites() {
-    for (const tower of this.towers) {
-      const pos = tower.getPosition();
-
-      const baseKey = this.getBaseTextureKey(tower.typeKey);
-      if (tower.baseSprite && baseKey) {
-        tower.baseSprite.setPosition(pos.x, pos.y);
-        this.applyTowerVisual(tower.baseSprite, baseKey, tower.config.footprint);
-        tower.baseSprite.setRotation(tower.baseAngle);
-      }
-
-      const weaponKey = this.getWeaponTextureKey(tower.typeKey, tower.level);
-      if (tower.sprite && weaponKey) {
-        tower.sprite.setPosition(pos.x, pos.y);
-        this.applyTowerVisual(
-          tower.sprite,
-          weaponKey,
-          tower.config.footprint,
-          tower.config.weaponScale
-        );
-      }
-    }
+    for (const tower of this.towers) this.applyTowerFacing(tower);
   }
 
   // Удаляем картинки башни (при продаже).
@@ -2656,10 +2763,6 @@ class GameScene extends Phaser.Scene {
       if (this.bridgeAtCell(col, row)) return false; // одна клетка — один мост
       const dir = this.roadDirectionAt(col, row);
       if (!dir || dir === 'corner') return false; // на повороте/перекрёстке нельзя
-      // Призрак должен стоять ПОПЕРЁК дороги.
-      const required = this.bridgeAngleAt(col, row);
-      const mod = (a) => ((a % Math.PI) + Math.PI) % Math.PI;
-      if (Math.abs(mod(this.buildAngle) - mod(required)) > 0.0001) return false;
       return !this.overlapsOtherTower(gx, gy, type, ignoreTower);
     }
     return this.isFreeSpot(gx, gy, type, ignoreTower);
@@ -2747,8 +2850,9 @@ class GameScene extends Phaser.Scene {
 
     this.gold -= type.cost;
     const tower = new Tower(this, gx, gy, this.selectedTowerType);
+    // Мост ориентируем автоматически — поперёк дороги.
+    if (type.isBridge) tower.baseAngle = this.bridgeAngleAt(Math.floor(gx), Math.floor(gy));
     this.towers.push(tower);
-    tower.baseAngle = this.buildAngle; // сохраняем поворот, выбранный при призраке
     this.createTowerSprite(tower);
     this.drawTowers(); // перерисовываем индикаторы уровня
     this.updateUI();
@@ -2772,28 +2876,35 @@ class GameScene extends Phaser.Scene {
       return;
     }
 
-    // Корпус.
-    const baseKey = this.getBaseTextureKey(this.selectedTowerType);
-    if (baseKey) {
-      this.ghostBase.setTexture(baseKey).setVisible(true);
-      this.applyTowerVisual(this.ghostBase, baseKey, type.footprint);
+    // Корпус (направление по умолчанию — вперёд).
+    const base = this.resolveBase(this.selectedTowerType, DIR_FORWARD);
+    if (base) {
+      this.ghostBase.setTexture(base.key).setVisible(true);
+      this.applyBaseVisual(this.ghostBase, this.selectedTowerType, base);
+      this.ghostBase.setRotation(0);
+      this.ghostBase.setPosition(0, 0);
     } else {
       this.ghostBase.setVisible(false);
     }
 
-    // Пушка (у нового строения — 1-го уровня).
-    const weaponKey = this.getWeaponTextureKey(this.selectedTowerType, 1);
-    if (weaponKey) {
-      this.ghostWeapon.setTexture(weaponKey).setVisible(true);
-      this.applyTowerVisual(this.ghostWeapon, weaponKey, type.footprint, type.weaponScale);
+    // Пушка (1-го уровня, направление по умолчанию).
+    const gun = this.resolveGun(this.selectedTowerType, 1, DIR_FORWARD);
+    if (gun) {
+      this.ghostWeapon.setTexture(gun.key).setVisible(true);
+      this.applyGunVisual(this.ghostWeapon, this.selectedTowerType, gun);
+      this.ghostWeapon.setRotation(0);
+      const mount = type.gunMount || { x: 0, y: 0 };
+      if (gun.directional) {
+        this.ghostWeapon.setPosition(mount.x * this.cellSize, mount.y * this.cellSize);
+      } else {
+        this.ghostWeapon.setPosition(0, 0);
+      }
     } else {
       this.ghostWeapon.setVisible(false);
     }
 
     const pos = worldToScreen(gx, gy);
     this.ghost.setPosition(pos.x, pos.y);
-
-    this.applyGhostAngle();
 
     const canPlace = this.canPlace(gx, gy, type) && this.gold >= type.cost;
     const tint = canPlace ? 0x66ff66 : 0xff5555;
@@ -2892,10 +3003,10 @@ class GameScene extends Phaser.Scene {
       }
     }
 
-    // Башни: перезарядка, поиск цели, выстрел и наводка пушки.
+    // Башни: перезарядка, поиск цели, выстрел и наводка корпуса/пушки.
     for (const tower of this.towers) {
       tower.update(delta, this.enemies);
-      if (tower.sprite) tower.sprite.setRotation(tower.aimAngle);
+      this.applyTowerFacing(tower);
     }
 
     // Убираем сломанные мосты.
