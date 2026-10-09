@@ -26,7 +26,6 @@ const GRID_LINE_COLOR = 0x0f3460; // цвет линий сетки
 const TOWER_COLOR = 0x2ecc71;     // акцентный цвет интерфейса башен
 const TOWER_MAX_LEVEL = 5;        // максимальный уровень башни
 const TOWER_SELL_RATIO = 0.7;     // возврат золота при продаже (70% вложенного)
-const TOWER_MOVE_SPEED = 3;       // скорость ходьбы башни при переносе (клеток/сек)
 // Размер спрайта (size) и радиус для коллизий/кликов (radius) задаются
 // индивидуально у каждого типа в TOWER_TYPES.
 
@@ -469,11 +468,6 @@ class Tower {
     this.sprite = null;              // картинка пушки (вращается)
     this.baseSprite = null;          // картинка корпуса (стоит на месте)
 
-    // Передвижение при переносе.
-    this.path = [];                  // маршрут ходьбы (точки в клетках)
-    this.isMoving = false;           // идёт ли башня пешком
-    this.lastCellKey = null;         // для учёта перехода через мост
-
     // Мост: ресурс переходов.
     this.capacity = type.capacity || 0;
     this.used = 0;
@@ -862,7 +856,7 @@ class MenuScene extends Phaser.Scene {
       'Цель — не пустить врагов до конца дороги.\n\n' +
         '• Строй башни на свободных клетках (на дорогу нельзя)\n' +
         '• Кнопка «СТАРТ ВОЛНЫ» запускает волну\n' +
-        '• Клик по башне — улучшить, переместить или продать\n' +
+        '• Клик по башне — улучшить или продать\n' +
         '• Золото дают за убийства врагов и зачистку волны\n' +
         '• Враг, дошедший до конца, отнимает жизнь'
     );
@@ -1110,8 +1104,6 @@ class GameScene extends Phaser.Scene {
 
     // Выбранная башня (для меню улучшения/продажи).
     this.selectedTower = null;
-    // Башня, для которой включён режим переноса (кнопка «Переместить»).
-    this.movingTower = null;
     // Мосты, исчерпавшие лимит (ломаются в конце кадра).
     this.brokenBridges = [];
     // Тип башни, который строим по клику (переключается панелью внизу).
@@ -1127,9 +1119,7 @@ class GameScene extends Phaser.Scene {
     // Башни хранятся списком (свободная установка, без привязки к клеткам).
     this.towers = [];
 
-    // Состояние перетаскивания башни и установки новой.
-    this.dragTower = null;
-    this.dragMoved = false;
+    // Состояние установки новой башни.
     this.isPlacing = false;
 
     // Маршрут (источник истины) + производная навигационная сетка для BFS/моста.
@@ -1200,12 +1190,6 @@ class GameScene extends Phaser.Scene {
           return;
         }
 
-        // Клавиша M (рус. Ь) включает режим переноса выбранной башни.
-        if (key === 'm' || key === 'ь') {
-          if (this.selectedTower) this.moveSelectedTower();
-          return;
-        }
-
         const index = parseInt(event.key, 10);
         if (!index) return;
         const keys = Object.keys(TOWER_TYPES);
@@ -1214,7 +1198,7 @@ class GameScene extends Phaser.Scene {
       });
     }
 
-    // Управление указателем: клик — постройка/меню, перетаскивание — перенос башни.
+    // Управление указателем: клик — постройка/меню, потяг по пустому — камера.
     this.input.on('pointerdown', this.handlePointerDown, this);
     this.input.on('pointermove', this.handlePointerMove, this);
     this.input.on('pointerup', this.handlePointerUp, this);
@@ -1344,10 +1328,10 @@ class GameScene extends Phaser.Scene {
       this.restartGame();
     });
 
-    // Меню башни (улучшение/переместить/продажа).
+    // Меню башни (улучшение/продажа).
     // ВАЖНО: без контейнера — интерактив в контейнере со scrollFactor(0)
     // ломает хит-тест кликов. Делаем прямые объекты, зафиксированные на экране.
-    this.towerMenuOffsets = { bg: 0, title: -72 * DPR, upgrade: -20 * DPR, move: 22 * DPR, sell: 62 * DPR };
+    this.towerMenuOffsets = { bg: 0, title: -60 * DPR, upgrade: 0, sell: 60 * DPR };
 
     this.towerMenuBg = this.add
       .rectangle(0, 0, 270 * DPR, 200 * DPR, 0x000000, 0.9)
@@ -1387,18 +1371,6 @@ class GameScene extends Phaser.Scene {
       .setVisible(false)
       .setInteractive({ useHandCursor: true });
 
-    this.towerMenuMove = this.add
-      .text(0, 0, '⤢ Переместить', {
-        fontFamily: 'Arial, sans-serif',
-        fontSize: `${18 * DPR}px`,
-        color: '#f1c40f',
-      })
-      .setOrigin(0.5)
-      .setDepth(103)
-      .setScrollFactor(0)
-      .setVisible(false)
-      .setInteractive({ useHandCursor: true });
-
     this.towerMenuSell = this.add
       .text(0, 0, '', {
         fontFamily: 'Arial, sans-serif',
@@ -1415,18 +1387,12 @@ class GameScene extends Phaser.Scene {
       this.towerMenuBg,
       this.towerMenuTitle,
       this.towerMenuUpgrade,
-      this.towerMenuMove,
       this.towerMenuSell,
     ];
 
     this.towerMenuUpgrade.on('pointerdown', (pointer, localX, localY, event) => {
       if (event && event.stopPropagation) event.stopPropagation();
       this.upgradeSelectedTower();
-    });
-
-    this.towerMenuMove.on('pointerdown', (pointer, localX, localY, event) => {
-      if (event && event.stopPropagation) event.stopPropagation();
-      this.moveSelectedTower();
     });
 
     this.towerMenuSell.on('pointerdown', (pointer, localX, localY, event) => {
@@ -1560,8 +1526,8 @@ class GameScene extends Phaser.Scene {
   // Открыть меню выбранной башни.
   openTowerMenu(tower) {
     this.selectedTower = tower;
-    // Сначала показываем все части, затем refreshTowerMenu скрывает ненужные
-    // (например, «Переместить» для моста).
+    // Показываем все части, затем refreshTowerMenu скрывает ненужные
+    // (например, «Улучшить» для моста).
     for (const part of this.towerMenuParts) part.setVisible(true);
     this.refreshTowerMenu();
     this.positionTowerMenu();
@@ -1587,13 +1553,11 @@ class GameScene extends Phaser.Scene {
       const left = Math.max(0, tower.capacity - tower.used);
       this.towerMenuTitle.setText(`Мост · переходов осталось: ${left}`);
       this.towerMenuUpgrade.setText('').setVisible(false);
-      this.towerMenuMove.setVisible(false); // мост не переносится
       this.towerMenuSell.setText(`✖ Продать (+${tower.getSellValue()})`);
       return;
     }
 
     this.towerMenuUpgrade.setVisible(true);
-    this.towerMenuMove.setVisible(true);
     this.towerMenuTitle.setText(
       `${tower.config.name} · ур. ${tower.level}\n` +
         `Радиус ${tower.range.toFixed(1)} · ${tower.fireRate.toFixed(1)}/с · точн. ${Math.round(
@@ -1636,22 +1600,7 @@ class GameScene extends Phaser.Scene {
     this.towerMenuBg.setPosition(x, y + off.bg);
     this.towerMenuTitle.setPosition(x, y + off.title);
     this.towerMenuUpgrade.setPosition(x, y + off.upgrade);
-    this.towerMenuMove.setPosition(x, y + off.move);
     this.towerMenuSell.setPosition(x, y + off.sell);
-  }
-
-  // Включаем режим переноса для выбранной башни.
-  moveSelectedTower() {
-    const tower = this.selectedTower;
-    if (!tower || tower.config.isBridge) return; // мост не переносится
-
-    this.movingTower = tower;
-    this.selectedTowerType = null;
-    this.refreshBuildMenu();
-    this.closeTowerMenu();
-    if (this.ghost) this.ghost.setVisible(false);
-    this.showRangeRingForTower(tower);
-    this.showMessage('Нажми на новое место для башни');
   }
 
   // Повернуть призрак будущей башни на 90° (до постройки).
@@ -1984,7 +1933,7 @@ class GameScene extends Phaser.Scene {
   //   this.road       — двумерный массив true/false (дорога или нет).
   // Производная навигационная сетка: «дорога» = клетки, чьи центры ближе
   // ROAD_WIDTH/2 к полилинии Route. Источник истины — ROUTE, сетка — лишь
-  // приближение (нужно для BFS/переноса и клеточной механики моста).
+  // приближение (нужно для клеточной механики моста).
   buildPath() {
     this.road = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(false));
     this.pathCells = [];
@@ -2457,21 +2406,6 @@ class GameScene extends Phaser.Scene {
     }
   }
 
-  // Ставим корпус и пушку башни в её текущую точку.
-  positionTowerSprites(tower) {
-    const pos = tower.getPosition();
-    const depth = 10 + (tower.gx + tower.gy) * 0.01;
-    if (tower.baseSprite) {
-      tower.baseSprite.setPosition(pos.x, pos.y);
-      tower.baseSprite.setRotation(tower.baseAngle);
-      tower.baseSprite.setDepth(depth);
-    }
-    if (tower.sprite) {
-      tower.sprite.setPosition(pos.x, pos.y);
-      tower.sprite.setDepth(depth + 0.05);
-    }
-  }
-
   // Кольцо радиуса атаки: в изометрии круг проецируется в эллипс (2:1).
   showRangeRing(x, y, rangeUnits, color) {
     const g = this.rangeGraphics;
@@ -2524,125 +2458,6 @@ class GameScene extends Phaser.Scene {
     return this.roadDirectionAt(col, row) === 'horizontal' ? Math.PI / 2 : 0;
   }
 
-  // Можно ли пройти по клетке: везде свободно, кроме дороги
-  // (по дороге — только через мост, у которого остался ресурс).
-  isWalkableCell(col, row) {
-    if (col < 0 || col >= GRID_SIZE || row < 0 || row >= GRID_SIZE) return false;
-    if (!this.isRoad(row, col)) return true;
-    const bridge = this.bridgeAtCell(col, row);
-    return !!bridge && !bridge.usedUp;
-  }
-
-  // Поиск пути по клеткам (BFS). Возвращает список точек или null.
-  findPath(startCol, startRow, goalCol, goalRow) {
-    if (startCol === goalCol && startRow === goalRow) return [];
-
-    const key = (c, r) => c + ',' + r;
-    const queue = [[startCol, startRow]];
-    const visited = new Set([key(startCol, startRow)]);
-    const cameFrom = new Map();
-    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-
-    while (queue.length) {
-      const [c, r] = queue.shift();
-
-      for (const [dc, dr] of dirs) {
-        const nc = c + dc;
-        const nr = r + dr;
-        const k = key(nc, nr);
-        if (visited.has(k)) continue;
-        if (!this.isWalkableCell(nc, nr)) continue;
-
-        visited.add(k);
-        cameFrom.set(k, [c, r]);
-
-        if (nc === goalCol && nr === goalRow) {
-          const path = [];
-          let cur = [nc, nr];
-          while (!(cur[0] === startCol && cur[1] === startRow)) {
-            path.push({ gx: cur[0] + 0.5, gy: cur[1] + 0.5 });
-            cur = cameFrom.get(key(cur[0], cur[1]));
-          }
-          path.reverse();
-          return path;
-        }
-
-        queue.push([nc, nr]);
-      }
-    }
-
-    return null; // пути нет
-  }
-
-  // Начинаем перенос: башня пойдёт пешком к указанной точке.
-  startTowerMove(tower, gx, gy) {
-    // Мосты не переносятся.
-    if (tower.config.isBridge) return false;
-
-    if (!this.canPlace(gx, gy, tower.config, tower)) {
-      this.showMessage('Здесь нельзя поставить');
-      return false;
-    }
-
-    const startCol = Math.floor(tower.gx);
-    const startRow = Math.floor(tower.gy);
-    const path = this.findPath(startCol, startRow, Math.floor(gx), Math.floor(gy));
-    if (!path) {
-      this.showMessage('Нет прохода (нужен мост)');
-      return false;
-    }
-
-    path.push({ gx, gy });
-    tower.path = path;
-    tower.isMoving = true;
-    tower.lastCellKey = startCol + ',' + startRow;
-    return true;
-  }
-
-  // Движение башни по маршруту (при переносе).
-  updateTowerMovement(tower, delta) {
-    if (!tower.path || tower.path.length === 0) {
-      tower.isMoving = false;
-      return;
-    }
-
-    const speed = (tower.config.moveSpeed || TOWER_MOVE_SPEED) * (delta / 1000);
-    const point = tower.path[0];
-    const dx = point.gx - tower.gx;
-    const dy = point.gy - tower.gy;
-    const distance = Math.hypot(dx, dy);
-
-    if (distance <= speed || distance < 0.02) {
-      tower.gx = point.gx;
-      tower.gy = point.gy;
-      tower.path.shift();
-      if (tower.path.length === 0) tower.isMoving = false;
-    } else {
-      tower.gx += (dx / distance) * speed;
-      tower.gy += (dy / distance) * speed;
-    }
-
-    // Когда башня покидает клетку моста — расходуем один переход.
-    const col = Math.floor(tower.gx);
-    const row = Math.floor(tower.gy);
-    const cellKey = col + ',' + row;
-    if (tower.lastCellKey && tower.lastCellKey !== cellKey) {
-      const parts = tower.lastCellKey.split(',');
-      const bridge = this.bridgeAtCell(Number(parts[0]), Number(parts[1]));
-      if (bridge) {
-        bridge.used += 1;
-        // Лимит исчерпан — мост сломается (убираем в конце кадра).
-        if (bridge.capacity > 0 && bridge.used >= bridge.capacity && !bridge.usedUp) {
-          bridge.usedUp = true;
-          this.brokenBridges.push(bridge);
-        }
-      }
-    }
-    tower.lastCellKey = cellKey;
-
-    this.positionTowerSprites(tower);
-  }
-
   // Ломаем мосты, исчерпавшие лимит переходов.
   breakBridges() {
     if (this.brokenBridges.length === 0) return;
@@ -2652,7 +2467,6 @@ class GameScene extends Phaser.Scene {
       if (index !== -1) this.towers.splice(index, 1);
       this.destroyTowerSprite(bridge);
       if (this.selectedTower === bridge) this.closeTowerMenu();
-      if (this.movingTower === bridge) this.movingTower = null;
     }
 
     this.brokenBridges = [];
@@ -2784,8 +2598,8 @@ class GameScene extends Phaser.Scene {
   }
 
   // Находим башню под точкой по её кругу (radius).
-  // Зону захвата НЕ расширяем до всего спрайта, иначе рядом с башней
-  // нельзя поставить новую — клик уходил бы в перетаскивание.
+  // Зону захвата НЕ расширяем до всего спрайта — иначе рядом с башней
+  // нельзя было бы попасть точно по нужной.
   towerAt(gx, gy) {
     for (const tower of this.towers) {
       if (Math.hypot(tower.gx - gx, tower.gy - gy) <= tower.config.footprint / 2) return tower;
@@ -2836,7 +2650,7 @@ class GameScene extends Phaser.Scene {
     return this.isFreeSpot(gx, gy, type, ignoreTower);
   }
 
-  // Обработка нажатия: башня — перетаскивание, пустое место — режим установки.
+  // Обработка нажатия: башня — меню, пустое место — режим установки.
   handlePointerDown(pointer) {
     if (this.isGameOver) return;
 
@@ -2845,7 +2659,7 @@ class GameScene extends Phaser.Scene {
     this.panArmed = false;
     this.panActive = false;
 
-    // ПКМ — полностью отменяем: перенос, установку и выбор башни.
+    // ПКМ — отменяем установку и закрываем меню.
     if (pointer.rightButtonDown()) {
       this.cancelAll();
       return;
@@ -2853,27 +2667,10 @@ class GameScene extends Phaser.Scene {
 
     const { gx, gy } = this.pointerToGrid(pointer);
 
-    // Нажали на башню.
+    // Нажали на башню — открываем её меню (улучшение/продажа).
     const existing = this.towerAt(gx, gy);
     if (existing) {
-      // Если для этой башни включён режим переноса — тащим её.
-      if (this.movingTower === existing) {
-        this.startDragging(existing, gx, gy);
-        return;
-      }
-      // Иначе открываем меню. Перенос — только по кнопке «Переместить».
-      this.movingTower = null;
       this.openTowerMenu(existing);
-      return;
-    }
-
-    // Если включён режим переноса — башня идёт к указанной точке.
-    if (this.movingTower) {
-      const tower = this.movingTower;
-      if (this.startTowerMove(tower, gx, gy)) {
-        this.movingTower = null;
-        this.clearRangeRing();
-      }
       return;
     }
 
@@ -2900,19 +2697,10 @@ class GameScene extends Phaser.Scene {
     this.clearRangeRing();
   }
 
-  // Полная отмена (ПКМ): вернуть переносимую башню, снять выбор, закрыть меню.
+  // Сброс: отмена установки, снятие выбора, закрытие меню.
   cancelAll() {
-    if (this.dragTower) {
-      const tower = this.dragTower;
-      tower.gx = this.dragStartX;
-      tower.gy = this.dragStartY;
-      this.positionTowerSprites(tower);
-      this.dragTower = null;
-    }
-
     this.isPlacing = false;
     this.selectedTowerType = null;
-    this.movingTower = null;
     this.closeTowerMenu();
     this.refreshBuildMenu();
     if (this.ghost) this.ghost.setVisible(false);
@@ -3002,19 +2790,7 @@ class GameScene extends Phaser.Scene {
     this.showRangeRing(pos.x, pos.y, type.range, type.color);
   }
 
-  // Начинаем перетаскивание башни (запоминаем, за какую точку «схватили»).
-  startDragging(tower, gx, gy) {
-    this.dragTower = tower;
-    this.dragMoved = false;
-    this.dragOffsetX = tower.gx - gx;
-    this.dragOffsetY = tower.gy - gy;
-    this.dragStartX = tower.gx;
-    this.dragStartY = tower.gy;
-    this.closeTowerMenu();
-    this.showRangeRingForTower(tower);
-  }
-
-  // Движение указателя: тащим башню или показываем призрак новой.
+  // Движение указателя: показываем призрак будущей башни.
   handlePointerMove(pointer) {
     if (this.isGameOver) return;
 
@@ -3023,44 +2799,14 @@ class GameScene extends Phaser.Scene {
 
     const { gx, gy } = this.pointerToGrid(pointer);
 
-    // Тащим существующую башню.
-    if (this.dragTower) {
-      const tower = this.dragTower;
-      const newGx = gx + this.dragOffsetX;
-      const newGy = gy + this.dragOffsetY;
-
-      // Небольшой порог, чтобы лёгкое дрожание пальца не считалось переносом.
-      if (!this.dragMoved) {
-        const movedPx =
-          Math.hypot(newGx - this.dragStartX, newGy - this.dragStartY) * this.cellSize;
-        if (movedPx < 8) return;
-        this.dragMoved = true;
-      }
-
-      tower.gx = newGx;
-      tower.gy = newGy;
-
-      this.positionTowerSprites(tower);
-      this.showRangeRingForTower(tower);
-      this.ghost.setVisible(false);
-      return;
-    }
-
-    // Режим переноса: кольцо следует за указателем (видно будущее место).
-    if (this.movingTower) {
-      const pos = worldToScreen(gx, gy);
-      this.showRangeRing(pos.x, pos.y, this.movingTower.range, this.movingTower.config.color);
-      return;
-    }
-
-    // Иначе — показываем призрак будущей башни под указателем.
+    // Показываем призрак будущей башни под указателем.
     this.updateGhost(gx, gy);
   }
 
   // Панорамирование одним пальцем/мышью. true — если камера сдвинулась
   // (тогда не показываем призрак башни и не строим по отпусканию).
   handlePan(pointer) {
-    if (!this.panArmed || this.pinchActive || this.dragTower || this.movingTower) {
+    if (!this.panArmed || this.pinchActive) {
       return false;
     }
     if (!pointer.isDown) return false;
@@ -3095,38 +2841,12 @@ class GameScene extends Phaser.Scene {
     return true;
   }
 
-  // Отпускание: завершаем перетаскивание башни или ставим новую.
+  // Отпускание: завершаем панорамирование или ставим новую башню.
   handlePointerUp(pointer) {
     // Сбрасываем панорамирование. Если панорамировали — тап не выполняем.
     const wasPanning = this.panActive;
     this.panArmed = false;
     this.panActive = false;
-
-    // Перетаскивание существующей башни.
-    if (this.dragTower) {
-      const tower = this.dragTower;
-      this.dragTower = null;
-      this.movingTower = null; // перенос завершён
-
-      // Если движения не было — это обычный клик, открываем меню башни.
-      if (!this.dragMoved) {
-        this.openTowerMenu(tower);
-        return;
-      }
-
-      // Новое место занято — возвращаем башню на прежнее.
-      if (!this.isFreeSpot(tower.gx, tower.gy, tower.config, tower)) {
-        tower.gx = this.dragStartX;
-        tower.gy = this.dragStartY;
-        this.showMessage('Здесь нельзя поставить');
-      }
-
-      this.positionTowerSprites(tower);
-      this.clearRangeRing();
-
-      if (this.selectedTower === tower) this.positionTowerMenu();
-      return;
-    }
 
     // Если был потяг (панорамирование) — это не тап, ничего не строим.
     if (wasPanning) return;
@@ -3159,15 +2879,6 @@ class GameScene extends Phaser.Scene {
 
     // Башни: перезарядка, поиск цели, выстрел и наводка пушки.
     for (const tower of this.towers) {
-      // Башню, которую сейчас тащат, не обновляем (она «в руке»).
-      if (tower === this.dragTower) continue;
-
-      // Башня идёт пешком после переноса — двигаем, но не стреляем.
-      if (tower.isMoving) {
-        this.updateTowerMovement(tower, delta);
-        continue;
-      }
-
       tower.update(delta, this.enemies);
       if (tower.sprite) tower.sprite.setRotation(tower.aimAngle);
     }
