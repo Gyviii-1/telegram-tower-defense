@@ -66,21 +66,6 @@ const TOWER_TYPES = {
     gunOrbit: 0.22,
     gunMount: { x: 0, y: -0.05 },
   },
-  bridge: {
-    name: 'Мост',
-    cost: 30,
-    range: 0,
-    fireRate: 0,
-    damage: 0,
-    accuracy: 1,
-    footprint: 1.4, // мост крупнее юнита примерно вдвое
-    weaponScale: 0,
-    isBridge: true,   // ставится на дорогу и разрешает по ней ходить
-    capacity: 3,      // сколько башен могут перейти, прежде чем мост «износится»
-    baseTexture: 'tower', // запасные картинки (потом bridge_base)
-    texture: 'tower',
-    color: 0x95a5a6,
-  },
 };
 
 const ENEMY_HIT_COLOR = 0xffffff; // вспышка врага при попадании
@@ -514,11 +499,6 @@ class Tower {
     this.baseDir = DIR_FORWARD;      // направление корпуса (одно из 8)
     this.sprite = null;              // картинка пушки (вращается)
     this.baseSprite = null;          // картинка корпуса (стоит на месте)
-
-    // Мост: ресурс переходов.
-    this.capacity = type.capacity || 0;
-    this.used = 0;
-    this.usedUp = false;
   }
 
   // Цена следующего улучшения (зависит от типа и уровня).
@@ -531,9 +511,9 @@ class Tower {
     return Math.floor(this.totalSpent * TOWER_SELL_RATIO);
   }
 
-  // Можно ли ещё улучшать башню (мост не улучшается).
+  // Можно ли ещё улучшать башню.
   canUpgrade() {
-    return !this.config.isBridge && this.level < TOWER_MAX_LEVEL;
+    return this.level < TOWER_MAX_LEVEL;
   }
 
   // Улучшение башни: +радиус, +скорость, +урон.
@@ -553,8 +533,6 @@ class Tower {
 
   // Обновление башни: перезарядка, поиск цели, выстрел.
   update(delta, enemies) {
-    if (this.config.isBridge) return; // мост не наводится и не стреляет
-
     this.cooldown -= delta / 1000;
 
     const pos = this.getPosition();
@@ -1135,7 +1113,6 @@ class GameScene extends Phaser.Scene {
     // Направленные спрайты (8 сторон): корпус и пушка. Если файлов ещё нет —
     // они просто не загрузятся, игра идёт на старых спрайтах (fallback).
     for (const key in TOWER_TYPES) {
-      if (TOWER_TYPES[key].isBridge) continue; // у моста направлений нет
       for (const dir of DIRECTIONS) {
         this.load.image(`${key}_base_${dir}`, `assets/${key}_base_${dir}.png`);
         for (let level = 1; level <= TOWER_MAX_LEVEL; level++) {
@@ -1186,8 +1163,6 @@ class GameScene extends Phaser.Scene {
 
     // Выбранная башня (для меню улучшения/продажи).
     this.selectedTower = null;
-    // Мосты, исчерпавшие лимит (ломаются в конце кадра).
-    this.brokenBridges = [];
     // Тип башни, который строим по клику (переключается панелью внизу).
     // По умолчанию НИЧЕГО не выбрано — игрок выбирает башню сам.
     this.selectedTowerType = null;
@@ -1204,9 +1179,8 @@ class GameScene extends Phaser.Scene {
     // Состояние установки новой башни.
     this.isPlacing = false;
 
-    // Маршрут (источник истины) + производная навигационная сетка для BFS/моста.
+    // Маршрут врагов (источник истины) в world-координатах.
     this.route = ROUTE;
-    this.buildPath();
 
     // Списки живых врагов и снарядов.
     this.enemies = [];
@@ -1609,8 +1583,7 @@ class GameScene extends Phaser.Scene {
   // Открыть меню выбранной башни.
   openTowerMenu(tower) {
     this.selectedTower = tower;
-    // Показываем все части, затем refreshTowerMenu скрывает ненужные
-    // (например, «Улучшить» для моста).
+    // Показываем все части меню.
     for (const part of this.towerMenuParts) part.setVisible(true);
     this.refreshTowerMenu();
     this.positionTowerMenu();
@@ -1630,15 +1603,6 @@ class GameScene extends Phaser.Scene {
   refreshTowerMenu() {
     const tower = this.selectedTower;
     if (!tower) return;
-
-    // У моста нет улучшений — показываем остаток переходов.
-    if (tower.config.isBridge) {
-      const left = Math.max(0, tower.capacity - tower.used);
-      this.towerMenuTitle.setText(`Мост · переходов осталось: ${left}`);
-      this.towerMenuUpgrade.setText('').setVisible(false);
-      this.towerMenuSell.setText(`✖ Продать (+${tower.getSellValue()})`);
-      return;
-    }
 
     this.towerMenuUpgrade.setVisible(true);
     this.towerMenuTitle.setText(
@@ -1995,29 +1959,6 @@ class GameScene extends Phaser.Scene {
       localStorage.setItem('td_pending_scores', JSON.stringify(remaining));
     } catch (error) {
       /* ignore */
-    }
-  }
-
-  // Строим маршрут по угловым точкам PATH_WAYPOINTS.
-  // Заполняем:
-  //   this.pathCells — все клетки маршрута по порядку (для движения врагов);
-  //   this.road       — двумерный массив true/false (дорога или нет).
-  // Производная навигационная сетка: «дорога» = клетки, чьи центры ближе
-  // ROAD_WIDTH/2 к полилинии Route. Источник истины — ROUTE, сетка — лишь
-  // приближение (нужно для клеточной механики моста).
-  buildPath() {
-    this.road = Array.from({ length: GRID_SIZE }, () => Array(GRID_SIZE).fill(false));
-    this.pathCells = [];
-
-    for (let row = 0; row < GRID_SIZE; row++) {
-      for (let col = 0; col < GRID_SIZE; col++) {
-        const wx = col + 0.5;
-        const wy = row + 0.5;
-        if (distanceToRoute(wx, wy, this.route) <= ROAD_WIDTH / 2) {
-          this.road[row][col] = true;
-          this.pathCells.push({ row, col });
-        }
-      }
     }
   }
 
@@ -2566,50 +2507,6 @@ class GameScene extends Phaser.Scene {
     if (this.rangeGraphics) this.rangeGraphics.clear();
   }
 
-  // Проверка: является ли клетка дорогой.
-  isRoad(row, col) {
-    return this.road[row] !== undefined && this.road[row][col] === true;
-  }
-
-  // Мост, стоящий ровно на этой клетке (мосты ставим по центру клетки).
-  bridgeAtCell(col, row) {
-    for (const tower of this.towers) {
-      if (!tower.config.isBridge) continue;
-      if (Math.floor(tower.gx) === col && Math.floor(tower.gy) === row) return tower;
-    }
-    return null;
-  }
-
-  // Направление дороги в клетке: 'horizontal', 'vertical', 'corner' или null.
-  roadDirectionAt(col, row) {
-    const horizontal = this.isRoad(row, col - 1) || this.isRoad(row, col + 1);
-    const vertical = this.isRoad(row - 1, col) || this.isRoad(row + 1, col);
-    if (horizontal && vertical) return 'corner';
-    if (horizontal) return 'horizontal';
-    if (vertical) return 'vertical';
-    return null;
-  }
-
-  // Мост всегда ставится ПОПЕРЁК дороги (вдоль — нельзя).
-  bridgeAngleAt(col, row) {
-    return this.roadDirectionAt(col, row) === 'horizontal' ? Math.PI / 2 : 0;
-  }
-
-  // Ломаем мосты, исчерпавшие лимит переходов.
-  breakBridges() {
-    if (this.brokenBridges.length === 0) return;
-
-    for (const bridge of this.brokenBridges) {
-      const index = this.towers.indexOf(bridge);
-      if (index !== -1) this.towers.splice(index, 1);
-      this.destroyTowerSprite(bridge);
-      if (this.selectedTower === bridge) this.closeTowerMenu();
-    }
-
-    this.brokenBridges = [];
-    this.showMessage('Мост сломался!');
-  }
-
   // ------------------------- Волны -------------------------
   // Множитель HP врагов на волне (растёт плавно, без резких скачков).
   enemyHpScale(wave) {
@@ -2770,17 +2667,8 @@ class GameScene extends Phaser.Scene {
     return false;
   }
 
-  // Можно ли разместить башню (с учётом того, что мост ставится на дорогу).
+  // Можно ли разместить башню в точке.
   canPlace(gx, gy, type, ignoreTower = null) {
-    if (type.isBridge) {
-      const col = Math.floor(gx);
-      const row = Math.floor(gy);
-      if (!this.isRoad(row, col)) return false; // мост — только на дорогу
-      if (this.bridgeAtCell(col, row)) return false; // одна клетка — один мост
-      const dir = this.roadDirectionAt(col, row);
-      if (!dir || dir === 'corner') return false; // на повороте/перекрёстке нельзя
-      return !this.overlapsOtherTower(gx, gy, type, ignoreTower);
-    }
     return this.isFreeSpot(gx, gy, type, ignoreTower);
   }
 
@@ -2847,12 +2735,6 @@ class GameScene extends Phaser.Scene {
 
     const type = TOWER_TYPES[this.selectedTowerType];
 
-    // Мост ставим ровно по центру клетки дороги.
-    if (type.isBridge) {
-      gx = Math.floor(gx) + 0.5;
-      gy = Math.floor(gy) + 0.5;
-    }
-
     if (!this.canPlace(gx, gy, type)) {
       this.showMessage('Здесь нельзя строить');
       return false;
@@ -2866,8 +2748,6 @@ class GameScene extends Phaser.Scene {
 
     this.gold -= type.cost;
     const tower = new Tower(this, gx, gy, this.selectedTowerType);
-    // Мост ориентируем автоматически — поперёк дороги.
-    if (type.isBridge) tower.baseAngle = this.bridgeAngleAt(Math.floor(gx), Math.floor(gy));
     this.towers.push(tower);
     this.createTowerSprite(tower);
     this.drawTowers(); // перерисовываем индикаторы уровня
@@ -3041,9 +2921,6 @@ class GameScene extends Phaser.Scene {
       tower.update(delta, this.enemies);
       this.applyTowerFacing(tower);
     }
-
-    // Убираем сломанные мосты.
-    this.breakBridges();
 
     // Снаряды.
     for (const projectile of this.projectiles) {
