@@ -2488,25 +2488,41 @@ class GameScene extends Phaser.Scene {
     }
   }
 
-  // Кольцо радиуса атаки: в изометрии круг проецируется в эллипс (2:1).
-  showRangeRing(x, y, rangeUnits, color) {
+  // Изо-эллипс (круг world -> эллипс 2:1). Радиус в world units.
+  fillIsoEllipse(x, y, radiusUnits, color, alpha) {
     const g = this.rangeGraphics;
-    g.clear();
-    const a = ISO_HW * Math.SQRT2 * rangeUnits; // полуось по X
-    const b = ISO_HH * Math.SQRT2 * rangeUnits; // полуось по Y
-    g.fillStyle(color, 0.08);
+    const a = ISO_HW * Math.SQRT2 * radiusUnits;
+    const b = ISO_HH * Math.SQRT2 * radiusUnits;
+    g.fillStyle(color, alpha);
     g.fillEllipse(x, y, a * 2, b * 2);
-    g.lineStyle(3, color, 0.8);
+  }
+
+  strokeIsoEllipse(x, y, radiusUnits, color, alpha, lineWidth) {
+    const g = this.rangeGraphics;
+    const a = ISO_HW * Math.SQRT2 * radiusUnits;
+    const b = ISO_HH * Math.SQRT2 * radiusUnits;
+    g.lineStyle(lineWidth, color, alpha);
     g.strokeEllipse(x, y, a * 2, b * 2);
   }
 
-  // Кольцо радиуса конкретной башни.
-  showRangeRingForTower(tower) {
-    const pos = tower.getPosition();
-    this.showRangeRing(pos.x, pos.y, tower.range, tower.config.color);
+  // Кольцо радиуса атаки + круг занимаемой площади башни (footprint).
+  showRangeRing(x, y, rangeUnits, color, footprintUnits) {
+    this.rangeGraphics.clear();
+    if (footprintUnits) {
+      this.fillIsoEllipse(x, y, footprintUnits, 0xffffff, 0.06);
+      this.strokeIsoEllipse(x, y, footprintUnits, 0xffffff, 0.5, 2);
+    }
+    this.fillIsoEllipse(x, y, rangeUnits, color, 0.08);
+    this.strokeIsoEllipse(x, y, rangeUnits, color, 0.8, 3);
   }
 
-  // Убрать кольцо радиуса.
+  // Кольца конкретной башни (радиус атаки + её площадь).
+  showRangeRingForTower(tower) {
+    const pos = tower.getPosition();
+    this.showRangeRing(pos.x, pos.y, tower.range, tower.config.color, tower.config.footprint / 2);
+  }
+
+  // Убрать кольца.
   clearRangeRing() {
     if (this.rangeGraphics) this.rangeGraphics.clear();
   }
@@ -2839,8 +2855,16 @@ class GameScene extends Phaser.Scene {
     this.ghostWeapon.setTint(tint);
     this.ghost.setVisible(true);
 
-    // Кольцо радиуса будущей башни.
-    this.showRangeRing(pos.x, pos.y, type.range, type.color);
+    // Кольца: бледные круги занятости у всех башен + площадь и радиус будущей.
+    this.rangeGraphics.clear();
+    for (const t of this.towers) {
+      const p = t.getPosition();
+      this.strokeIsoEllipse(p.x, p.y, t.config.footprint / 2, 0xffffff, 0.25, 2);
+    }
+    this.fillIsoEllipse(pos.x, pos.y, type.footprint / 2, tint, 0.15);
+    this.strokeIsoEllipse(pos.x, pos.y, type.footprint / 2, tint, 0.9, 2);
+    this.fillIsoEllipse(pos.x, pos.y, type.range, type.color, 0.08);
+    this.strokeIsoEllipse(pos.x, pos.y, type.range, type.color, 0.8, 3);
   }
 
   // Движение указателя: показываем призрак будущей башни.
