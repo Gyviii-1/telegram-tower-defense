@@ -44,7 +44,7 @@ const TOWER_TYPES = {
     baseTexture: 'tower', // корпус (стоит на месте)
     texture: 'tower', // запасная картинка
     color: 0x2ecc71,
-    baseOrigin: { x: 0.5, y: 1.0 }, // опора корпуса — ноги (низ-центр картинки)
+    baseOrigin: { x: 0.5, y: 0.5 }, // опора корпуса — центр картинки
     gunOrigin: { x: 0.5, y: 0.5 },  // опора пушки — точка крепления в картинке
     gunOrbit: 0.18,                 // радиус облёта пушки вокруг корпуса (в долях клетки)
     gunMount: { x: 0, y: -0.05 },   // доп. сдвиг пушки (в долях клетки)
@@ -61,7 +61,7 @@ const TOWER_TYPES = {
     baseTexture: 'tower_minigun', // корпус (стоит на месте)
     texture: 'tower_minigun', // запасная картинка
     color: 0x3498db,
-    baseOrigin: { x: 0.5, y: 1.0 },
+    baseOrigin: { x: 0.5, y: 0.5 },
     gunOrigin: { x: 0.5, y: 0.5 },
     gunOrbit: 0.22,
     gunMount: { x: 0, y: -0.05 },
@@ -2637,14 +2637,15 @@ class GameScene extends Phaser.Scene {
   // а не с точкой клетки внизу.
   towerAt(px, py) {
     for (const tower of this.towers) {
+      const p = tower.getPosition();
+      // Круг вокруг точки башни...
+      if (Math.hypot(p.x - px, p.y - py) <= (tower.config.footprint / 2) * this.cellSize) {
+        return tower;
+      }
+      // ...и границы рисунка корпуса (совпадает с картинкой).
       if (tower.baseSprite) {
         const b = tower.baseSprite.getBounds();
         if (Phaser.Geom.Rectangle.Contains(b, px, py)) return tower;
-      } else {
-        const p = tower.getPosition();
-        if (Math.hypot(p.x - px, p.y - py) <= (tower.config.footprint / 2) * this.cellSize) {
-          return tower;
-        }
       }
     }
     return null;
