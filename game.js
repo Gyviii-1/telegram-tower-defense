@@ -46,7 +46,8 @@ const TOWER_TYPES = {
     color: 0x2ecc71,
     baseOrigin: { x: 0.5, y: 1.0 }, // опора корпуса — ноги (низ-центр картинки)
     gunOrigin: { x: 0.5, y: 0.5 },  // опора пушки — точка крепления в картинке
-    gunMount: { x: 0, y: -0.12 },   // сдвиг пушки от центра башни (в долях клетки)
+    gunOrbit: 0.18,                 // радиус облёта пушки вокруг корпуса (в долях клетки)
+    gunMount: { x: 0, y: -0.05 },   // доп. сдвиг пушки (в долях клетки)
   },
   minigun: {
     name: 'Миниган',
@@ -62,7 +63,8 @@ const TOWER_TYPES = {
     color: 0x3498db,
     baseOrigin: { x: 0.5, y: 1.0 },
     gunOrigin: { x: 0.5, y: 0.5 },
-    gunMount: { x: 0, y: -0.15 },
+    gunOrbit: 0.22,
+    gunMount: { x: 0, y: -0.05 },
   },
   bridge: {
     name: 'Мост',
@@ -506,7 +508,7 @@ class Tower {
     this.accuracy = type.accuracy !== undefined ? type.accuracy : 1; // шанс попадания
     this.cooldown = 0;               // время до следующего выстрела, сек
     this.totalSpent = type.cost;     // сколько золота вложено (для продажи)
-    this.aimAngle = 0;               // куда направлена пушка (радианы)
+    this.aimAngle = dirToAngle(DIR_FORWARD); // куда направлена пушка (радианы)
     this.aimDir = DIR_FORWARD;       // направление пушки (одно из 8)
     this.baseAngle = dirToAngle(DIR_FORWARD); // направление корпуса (радианы)
     this.baseDir = DIR_FORWARD;      // направление корпуса (одно из 8)
@@ -2340,10 +2342,11 @@ class GameScene extends Phaser.Scene {
         }
         const mount = type.gunMount || { x: 0, y: 0 };
         if (gun.directional) {
-          // Крепим в точке mount от центра башни и не вращаем.
+          // Пушка ОБЛЕТАЕТ корпус: точка крепления идёт по кругу в сторону цели.
+          const orbit = (type.gunOrbit || 0) * this.cellSize;
           tower.sprite.setPosition(
-            pos.x + mount.x * this.cellSize,
-            pos.y + mount.y * this.cellSize
+            pos.x + Math.cos(tower.aimAngle) * orbit + mount.x * this.cellSize,
+            pos.y + Math.sin(tower.aimAngle) * orbit + mount.y * this.cellSize
           );
           tower.sprite.setRotation(0);
         } else {
@@ -2895,7 +2898,12 @@ class GameScene extends Phaser.Scene {
       this.ghostWeapon.setRotation(0);
       const mount = type.gunMount || { x: 0, y: 0 };
       if (gun.directional) {
-        this.ghostWeapon.setPosition(mount.x * this.cellSize, mount.y * this.cellSize);
+        const orbit = (type.gunOrbit || 0) * this.cellSize;
+        const a = dirToAngle(DIR_FORWARD);
+        this.ghostWeapon.setPosition(
+          Math.cos(a) * orbit + mount.x * this.cellSize,
+          Math.sin(a) * orbit + mount.y * this.cellSize
+        );
       } else {
         this.ghostWeapon.setPosition(0, 0);
       }
