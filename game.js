@@ -2321,6 +2321,19 @@ class GameScene extends Phaser.Scene {
     const pos = tower.getPosition();
     const type = tower.config;
 
+    // Центр башни (вокруг него облетает пушка) — центр РИСУНКА корпуса,
+    // а не точка клетки (иначе облёт идёт «у ног»).
+    let centerX = pos.x;
+    let centerY = pos.y;
+    if (tower.baseSprite) {
+      const o = type.baseOrigin || { x: 0.5, y: 1.0 };
+      const vis = this.getVisual(tower.baseSprite.texture.key);
+      if (vis) {
+        centerX = pos.x + (vis.originX - o.x) * tower.baseSprite.displayWidth;
+        centerY = pos.y + (vis.originY - o.y) * tower.baseSprite.displayHeight;
+      }
+    }
+
     if (tower.baseSprite) {
       const base = this.resolveBase(tower.typeKey, tower.baseDir);
       if (base) {
@@ -2340,13 +2353,13 @@ class GameScene extends Phaser.Scene {
           tower.sprite.setTexture(gun.key);
           this.applyGunVisual(tower.sprite, tower.typeKey, gun);
         }
-        const mount = type.gunMount || { x: 0, y: 0 };
         if (gun.directional) {
-          // Пушка ОБЛЕТАЕТ корпус: точка крепления идёт по кругу в сторону цели.
+          // Пушка облетает ЦЕНТР башни в сторону цели.
           const orbit = (type.gunOrbit || 0) * this.cellSize;
+          const mount = type.gunMount || { x: 0, y: 0 };
           tower.sprite.setPosition(
-            pos.x + Math.cos(tower.aimAngle) * orbit + mount.x * this.cellSize,
-            pos.y + Math.sin(tower.aimAngle) * orbit + mount.y * this.cellSize
+            centerX + Math.cos(tower.aimAngle) * orbit + mount.x * this.cellSize,
+            centerY + Math.sin(tower.aimAngle) * orbit + mount.y * this.cellSize
           );
           tower.sprite.setRotation(0);
         } else {
@@ -2890,6 +2903,18 @@ class GameScene extends Phaser.Scene {
       this.ghostBase.setVisible(false);
     }
 
+    // Центр корпуса призрака (вокруг него облетает пушка).
+    let cX = 0;
+    let cY = 0;
+    if (base) {
+      const o = type.baseOrigin || { x: 0.5, y: 1.0 };
+      const vis = this.getVisual(base.key);
+      if (vis) {
+        cX = (vis.originX - o.x) * this.ghostBase.displayWidth;
+        cY = (vis.originY - o.y) * this.ghostBase.displayHeight;
+      }
+    }
+
     // Пушка (1-го уровня, направление по умолчанию).
     const gun = this.resolveGun(this.selectedTowerType, 1, DIR_FORWARD);
     if (gun) {
@@ -2901,8 +2926,8 @@ class GameScene extends Phaser.Scene {
         const orbit = (type.gunOrbit || 0) * this.cellSize;
         const a = dirToAngle(DIR_FORWARD);
         this.ghostWeapon.setPosition(
-          Math.cos(a) * orbit + mount.x * this.cellSize,
-          Math.sin(a) * orbit + mount.y * this.cellSize
+          cX + Math.cos(a) * orbit + mount.x * this.cellSize,
+          cY + Math.sin(a) * orbit + mount.y * this.cellSize
         );
       } else {
         this.ghostWeapon.setPosition(0, 0);
