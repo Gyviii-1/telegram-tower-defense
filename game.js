@@ -562,22 +562,26 @@ class Tower {
     this.cooldown = 1 / this.fireRate; // перезарядка
   }
 
-  // Ищем ближайшего живого врага. Дальность — в world units.
+  // Целимся в ПЕРВОГО врага — самого продвинутого по дороге (ведущего),
+  // из тех, кто в радиусе. segment + progress монотонно растёт по маршруту.
   findTarget(enemies) {
-    let nearest = null;
-    let nearestDistance = Infinity;
+    let best = null;
+    let bestLead = -Infinity;
 
     for (const enemy of enemies) {
       if (!enemy.active || enemy.isDead) continue;
 
       const distance = Math.hypot(this.gx - enemy.wx, this.gy - enemy.wy);
-      if (distance <= this.range && distance < nearestDistance) {
-        nearest = enemy;
-        nearestDistance = distance;
+      if (distance > this.range) continue;
+
+      const lead = enemy.segment + enemy.progress;
+      if (lead > bestLead) {
+        bestLead = lead;
+        best = enemy;
       }
     }
 
-    return nearest;
+    return best;
   }
 
   // Создаём снаряд, летящий в цель.
