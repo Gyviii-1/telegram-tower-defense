@@ -2632,12 +2632,20 @@ class GameScene extends Phaser.Scene {
     return { gx: w.x, gy: w.y };
   }
 
-  // Находим башню под точкой по её кругу (radius).
-  // Зону захвата НЕ расширяем до всего спрайта — иначе рядом с башней
-  // нельзя было бы попасть точно по нужной.
-  towerAt(gx, gy) {
+  // Находим башню под точкой (px, py — в world-пикселях, как getWorldPoint).
+  // Хит-тест по ГРАНИЦАМ рисунка корпуса — чтобы зона клика совпадала с картинкой,
+  // а не с точкой клетки внизу.
+  towerAt(px, py) {
     for (const tower of this.towers) {
-      if (Math.hypot(tower.gx - gx, tower.gy - gy) <= tower.config.footprint / 2) return tower;
+      if (tower.baseSprite) {
+        const b = tower.baseSprite.getBounds();
+        if (Phaser.Geom.Rectangle.Contains(b, px, py)) return tower;
+      } else {
+        const p = tower.getPosition();
+        if (Math.hypot(p.x - px, p.y - py) <= (tower.config.footprint / 2) * this.cellSize) {
+          return tower;
+        }
+      }
     }
     return null;
   }
@@ -2688,9 +2696,10 @@ class GameScene extends Phaser.Scene {
     }
 
     const { gx, gy } = this.pointerToGrid(pointer);
+    const worldPx = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
 
     // Нажали на башню — открываем её меню (улучшение/продажа).
-    const existing = this.towerAt(gx, gy);
+    const existing = this.towerAt(worldPx.x, worldPx.y);
     if (existing) {
       this.openTowerMenu(existing);
       return;
