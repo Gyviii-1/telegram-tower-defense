@@ -561,15 +561,12 @@ class Tower {
     const target = this.findTarget(enemies);
 
     // Наводим пушку на цель (визуально — по экранным позициям) и поворачиваем корпус.
+    // Нет цели — держим последнее направление (не сбрасываем).
     if (target) {
       this.aimAngle = Math.atan2(target.y - pos.y, target.x - pos.x);
       this.aimDir = angleToDir(this.aimAngle, this.aimDir);
       this.baseAngle = this.aimAngle;
       this.baseDir = angleToDir(this.baseAngle, this.baseDir);
-    } else {
-      // Нет цели — корпус смотрит вперёд по умолчанию.
-      this.baseAngle = dirToAngle(DIR_FORWARD);
-      this.baseDir = DIR_FORWARD;
     }
 
     // Стреляем, только если башня умеет стрелять, есть цель и она перезарядилась.
@@ -1198,6 +1195,8 @@ class GameScene extends Phaser.Scene {
     // Кэш замеров картинок: где у них непрозрачная часть и её центр.
     // Заполняется лениво (при первом использовании текстуры).
     this.visualCache = {};
+    // Кэш единого размера направленных спрайтов (на набор направлений).
+    this.dirSizeCache = {};
 
     // Башни хранятся списком (свободная установка, без привязки к клеткам).
     this.towers = [];
@@ -2309,7 +2308,7 @@ class GameScene extends Phaser.Scene {
     const gun = this.resolveGun(tower.typeKey, tower.level, tower.aimDir);
     if (gun) {
       tower.sprite = this.add.image(pos.x, pos.y, gun.key).setDepth(depth + 0.05);
-      this.applyGunVisual(tower.sprite, tower.typeKey, gun);
+      this.applyGunVisual(tower.sprite, tower.typeKey, gun, tower.level);
     }
 
     this.applyTowerFacing(tower);
@@ -2351,7 +2350,7 @@ class GameScene extends Phaser.Scene {
       if (gun) {
         if (tower.sprite.texture.key !== gun.key) {
           tower.sprite.setTexture(gun.key);
-          this.applyGunVisual(tower.sprite, tower.typeKey, gun);
+          this.applyGunVisual(tower.sprite, tower.typeKey, gun, tower.level);
         }
         if (gun.directional) {
           // Пушка облетает ЦЕНТР башни в сторону цели.
@@ -2386,7 +2385,7 @@ class GameScene extends Phaser.Scene {
       const pos = tower.getPosition();
       const depth = 10 + (tower.gx + tower.gy) * 0.01 + 0.05;
       tower.sprite = this.add.image(pos.x, pos.y, gun.key).setDepth(depth);
-      this.applyGunVisual(tower.sprite, tower.typeKey, gun);
+      this.applyGunVisual(tower.sprite, tower.typeKey, gun, tower.level);
     }
 
     this.applyTowerFacing(tower);
@@ -2426,35 +2425,36 @@ class GameScene extends Phaser.Scene {
     const contentPx = this.cellSize * type.footprint;
     if (base.directional) {
       const o = type.baseOrigin || { x: 0.5, y: 1.0 };
-      this.applyDirectionalVisual(image, base.key, contentPx, o.x, o.y);
+      this.applyDirectionalVisual(image, base.key, contentPx, o.x, o.y, `${typeKey}_base`);
     } else {
       this.applyTowerVisual(image, base.key, type.footprint);
     }
   }
 
   // Вписываем пушку: направленная — фиксированная опора (точка крепления).
-  applyGunVisual(image, typeKey, gun) {
+  applyGunVisual(image, typeKey, gun, level = 1) {
     const type = TOWER_TYPES[typeKey];
     const contentPx = this.cellSize * type.footprint * (type.weaponScale || 1);
     if (gun.directional) {
       const o = type.gunOrigin || { x: 0.5, y: 0.5 };
-      this.applyDirectionalVisual(image, gun.key, contentPx, o.x, o.y);
+      this.applyDirectionalVisual(image, gun.key, contentPx, o.x, o.y, `${typeKey}_gun_${level}`);
     } else {
       this.applyTowerVisual(image, gun.key, type.footprint, type.weaponScale);
     }
   }
 
-  // Направленный спрайт: размер считаем по непрозрачной части, но точку опоры
-  // берём ФИКСИРОВАННУЮ — иначе при смене направления спрайт «прыгает».
-  applyDirectionalVisual(image, key, contentPx, originX, originY) {
+  // Направленный спрайт: точку опоры берём ФИКСИРОВАННУЮ, а РАЗМЕР считаем один
+  // раз на весь набор направлений (по первой увиденной картинке) — иначе при
+  // смене направления спрайт «прыгает» и меняет размер.
+  applyDirectionalVisual(image, key, contentPx, originX, originY, sizeKey) {
     image.setOrigin(originX, originY);
-    const visual = this.getVisual(key);
-    if (visual && visual.fraction > 0) {
-      const wholePx = contentPx / visual.fraction;
-      image.setDisplaySize(wholePx, wholePx);
-    } else {
-      image.setDisplaySize(contentPx, contentPx);
+    if (!(sizeKey in this.dirSizeCache)) {
+      const visual = this.getVisual(key);
+      const frac = visual && visual.fraction > 0 ? visual.fraction : 1;
+      this.dirSizeCache[sizeKey] = contentPx / frac;
     }
+    const wholePx = this.dirSizeCache[sizeKey];
+    image.setDisplaySize(wholePx, wholePx);
   }
 
   // Вписываем картинку башни в её footprint и ставим точку опоры в центр
@@ -2919,7 +2919,7 @@ class GameScene extends Phaser.Scene {
     const gun = this.resolveGun(this.selectedTowerType, 1, DIR_FORWARD);
     if (gun) {
       this.ghostWeapon.setTexture(gun.key).setVisible(true);
-      this.applyGunVisual(this.ghostWeapon, this.selectedTowerType, gun);
+      this.applyGunVisual(this.ghostWeapon, this.selectedTowerType, gun, 1);
       this.ghostWeapon.setRotation(0);
       const mount = type.gunMount || { x: 0, y: 0 };
       if (gun.directional) {
