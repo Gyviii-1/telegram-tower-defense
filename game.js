@@ -1169,6 +1169,7 @@ class GameScene extends Phaser.Scene {
     this.autoWave = false;
     this.isTouch = this.game.device.input.touch;
     this.infoEnemy = null;
+    this.hoverEnemy = null;
 
     // Состояние волн.
     this.currentWave = 0;        // номер волны (до старта первой — 0)
@@ -1714,35 +1715,39 @@ class GameScene extends Phaser.Scene {
   }
 
   updateEnemyInfo() {
-    const e = this.infoEnemy;
-    if (!e || !e.active || e.isDead) {
-      this.hideEnemyInfo();
-      return;
-    }
-    const NAMES = {
-      normal: 'Обычный',
-      fast: 'Быстрый',
-      armored: 'Бронированный',
-      tank: 'Танк',
-      splitter: 'Делящийся',
-      small: 'Мелкий',
-      shielded: 'Щитоносец',
-      boss: 'Босс',
-    };
-    let text = `${NAMES[e.typeKey] || e.typeKey}\nHP ${Math.max(0, Math.ceil(e.hp))}/${e.maxHp}`;
-    if (e.shield > 0) text += `\nЩит ${Math.ceil(e.shield)}`;
-    this.enemyInfoText.setText(text);
+    // Жёлтый кружок: цель клика или (на ПК) наведённый враг.
+    const marker =
+      this.infoEnemy && this.infoEnemy.active && !this.infoEnemy.isDead
+        ? this.infoEnemy
+        : this.hoverEnemy && this.hoverEnemy.active && !this.hoverEnemy.isDead
+          ? this.hoverEnemy
+          : null;
+    if (marker) this.drawEnemyMarker(marker);
+    else this.clearEnemyMarker();
 
-    const pos = this.worldPxToScreen(e.x, e.y);
-    const width = this.scale.width;
-    const height = this.scale.height;
-    const bw = this.enemyInfoBg.width;
-    const bh = this.enemyInfoBg.height;
-    const x = Phaser.Math.Clamp(pos.x + 60 * DPR, bw / 2 + 4, width - bw / 2 - 4);
-    const y = Phaser.Math.Clamp(pos.y, bh / 2 + 4, height - bh / 2 - 4);
-    this.enemyInfoBg.setPosition(x, y);
-    this.enemyInfoText.setPosition(x, y);
-    this.drawEnemyMarker(e);
+    // Плашка с HP (по клику) — сбоку экрана, позиция задаётся в layoutUI.
+    const e = this.infoEnemy;
+    if (e && e.active && !e.isDead) {
+      const NAMES = {
+        normal: 'Обычный',
+        fast: 'Быстрый',
+        armored: 'Бронированный',
+        tank: 'Танк',
+        splitter: 'Делящийся',
+        small: 'Мелкий',
+        shielded: 'Щитоносец',
+        boss: 'Босс',
+      };
+      let text = `${NAMES[e.typeKey] || e.typeKey}\nHP ${Math.max(0, Math.ceil(e.hp))}/${e.maxHp}`;
+      if (e.shield > 0) text += `\nЩит ${Math.ceil(e.shield)}`;
+      this.enemyInfoText.setText(text);
+      this.enemyInfoBg.setVisible(true);
+      this.enemyInfoText.setVisible(true);
+    } else {
+      this.infoEnemy = null;
+      this.enemyInfoBg.setVisible(false);
+      this.enemyInfoText.setVisible(false);
+    }
   }
 
   // ---------------------- Маркер врага (жёлтый кружок) ----------------------
@@ -2395,6 +2400,15 @@ class GameScene extends Phaser.Scene {
 
     this.overlay.setSize(width, height);
     this.overlay.setPosition(0, 0);
+
+    // Плашка HP врага (по клику) — сбоку экрана.
+    if (this.enemyInfoBg) {
+      const ibw = this.enemyInfoBg.width;
+      const ix = width - ibw / 2 - pad;
+      const iy = height * 0.5;
+      this.enemyInfoBg.setPosition(ix, iy);
+      this.enemyInfoText.setPosition(ix, iy);
+    }
 
     this.gameOverText.setPosition(width / 2, height / 2);
     this.gameOverText.setStyle({ fontSize: `${Math.round(Math.min(width, height) * 0.13)}px` });
@@ -3173,11 +3187,18 @@ class GameScene extends Phaser.Scene {
 
     // Одним пальцем/мышью — панорамируем камеру (если потянули по пустому месту).
     if (this.handlePan(pointer)) {
+      this.hoverEnemy = null;
       this.hideEnemyInfo();
       return;
     }
 
     const { gx, gy } = this.pointerToGrid(pointer);
+
+    // ПК: наведение на врага — жёлтый кружок.
+    if (!this.isTouch) {
+      const worldPx = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+      this.hoverEnemy = this.enemyAt(worldPx.x, worldPx.y);
+    }
 
     // Показываем призрак будущей башни под указателем.
     this.updateGhost(gx, gy);
@@ -3274,8 +3295,8 @@ class GameScene extends Phaser.Scene {
     this.enemies = this.enemies.filter((enemy) => enemy.active);
     this.projectiles = this.projectiles.filter((projectile) => projectile.active);
 
-    // Окошко с HP врага — держим актуальным.
-    if (this.infoEnemy) this.updateEnemyInfo();
+    // Окошко с HP врага (кружок по клику/наведению, плашка по клику).
+    this.updateEnemyInfo();
 
     // Проверяем, не закончилась ли волна.
     this.checkWaveEnd();
