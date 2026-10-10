@@ -272,6 +272,7 @@ class Enemy extends Phaser.GameObjects.Rectangle {
     this.sizeFactor = type.size; // размер относительно клетки
     this.damageMultiplier = type.damageMultiplier || 1; // броня (множитель урона)
     this.shield = shield;        // запас щита (снимается первым)
+    this.maxShield = shield;     // изначальный щит (для отображения)
 
     // Маршрут и непрерывная мировая позиция.
     this.route = route;
@@ -283,6 +284,7 @@ class Enemy extends Phaser.GameObjects.Rectangle {
     this.dirY = 0;
 
     this.hp = hp;               // здоровье (по умолчанию базовое)
+    this.maxHp = hp;            // максимум здоровья (для отображения)
     this.isDead = false;        // мёртв/исчезает — не двигается и не цель для башен
 
     // Размер — в iso-пикселях (ISO_HW), не зависит от экрана.
@@ -1161,6 +1163,11 @@ class GameScene extends Phaser.Scene {
     this.lives = START_LIVES;
     this.isGameOver = false;
 
+    // Ускорение времени (для тестеров) и тип ввода (тач/мышь).
+    this.timeScale = 1;
+    this.isTouch = this.game.device.input.touch;
+    this.infoEnemy = null;
+
     // Состояние волн.
     this.currentWave = 0;        // номер волны (до старта первой — 0)
     this.isWaveActive = false;   // идёт ли волна прямо сейчас
@@ -1471,6 +1478,50 @@ class GameScene extends Phaser.Scene {
       .setDepth(40)
       .setVisible(false);
 
+    // Кнопка ускорения времени — только для стаффа (тестер/создатель).
+    this.speedButton = this.add
+      .text(0, 0, '⏩ x1', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: `${18 * DPR}px`,
+        color: '#f1c40f',
+        backgroundColor: '#00000088',
+        padding: { x: 10 * DPR, y: 6 * DPR },
+        stroke: '#000000',
+        strokeThickness: 3 * DPR,
+      })
+      .setOrigin(0, 0)
+      .setDepth(100)
+      .setScrollFactor(0)
+      .setVisible(false);
+    this.speedButton.on('pointerdown', (pointer, localX, localY, event) => {
+      if (event && event.stopPropagation) event.stopPropagation();
+      this.cycleSpeed();
+    });
+    this.speedButton.setInteractive({ useHandCursor: true });
+
+    // Окошко с HP врага (наведение на ПК / тап по врагу на телефоне).
+    this.enemyInfoBg = this.add
+      .rectangle(0, 0, 170 * DPR, 74 * DPR, 0x000000, 0.85)
+      .setStrokeStyle(2 * DPR, 0xffffff, 0.85)
+      .setDepth(104)
+      .setScrollFactor(0)
+      .setVisible(false);
+    this.enemyInfoText = this.add
+      .text(0, 0, '', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: `${14 * DPR}px`,
+        color: '#ffffff',
+        align: 'center',
+        lineSpacing: 3 * DPR,
+      })
+      .setOrigin(0.5)
+      .setDepth(105)
+      .setScrollFactor(0)
+      .setVisible(false);
+
+    // Яркое кольцо-маркер выбранной башни (в мировых координатах).
+    this.markerGraphics = this.add.graphics().setDepth(2);
+
     // UI фиксируется на экране (не двигается и не масштабируется камерой).
     const fixedUI = [
       this.uiText,
@@ -1480,6 +1531,9 @@ class GameScene extends Phaser.Scene {
       this.overlay,
       this.gameOverText,
       this.restartButton,
+      this.speedButton,
+      this.enemyInfoBg,
+      this.enemyInfoText,
     ];
     for (const obj of fixedUI) {
       if (obj) obj.setScrollFactor(0);
@@ -1502,6 +1556,106 @@ class GameScene extends Phaser.Scene {
     if (role === 'creator') return 'создатель';
     if (role === 'tester') return 'тестер';
     return '';
+  }
+
+  // ---------------------- Ускорение времени (стафф) ----------------------
+  updateStaffUI() {
+    const staff = this.playerRole === 'tester' || this.playerRole === 'creator';
+    if (this.speedButton) this.speedButton.setVisible(staff && !this.isGameOver);
+  }
+
+  cycleSpeed() {
+    const steps = [1, 2, 3, 4];
+    const idx = steps.indexOf(this.timeScale);
+    this.timeScale = steps[(idx + 1) % steps.length];
+    this.applyTimeScale();
+  }
+
+  applyTimeScale() {
+    const s = this.timeScale;
+    if (this.time) this.time.timeScale = s;
+    if (this.tweens) this.tweens.timeScale = s;
+    if (this.speedButton) this.speedButton.setText(`⏩ x${s}`);
+  }
+
+  // ---------------------- Информация о враге ----------------------
+  // Враг под точкой (px, py — в world-пикселях).
+  enemyAt(px, py) {
+    for (const enemy of this.enemies) {
+      if (!enemy.active || enemy.isDead) continue;
+      const half = Math.max(enemy.width, enemy.height) / 2;
+      if (Math.hypot(enemy.x - px, enemy.y - py) <= half) return enemy;
+    }
+    return null;
+  }
+
+  // world-пиксели -> экранные (UI) координаты.
+  worldPxToScreen(px, py) {
+    const cam = this.cameras.main;
+    const tl = cam.getWorldPoint(0, 0);
+    return { x: (px - tl.x) * cam.zoom, y: (py - tl.y) * cam.zoom };
+  }
+
+  showEnemyInfo(enemy) {
+    this.infoEnemy = enemy;
+    if (this.enemyInfoBg) this.enemyInfoBg.setVisible(true);
+    if (this.enemyInfoText) this.enemyInfoText.setVisible(true);
+    this.updateEnemyInfo();
+  }
+
+  hideEnemyInfo() {
+    this.infoEnemy = null;
+    if (this.enemyInfoBg) this.enemyInfoBg.setVisible(false);
+    if (this.enemyInfoText) this.enemyInfoText.setVisible(false);
+  }
+
+  updateEnemyInfo() {
+    const e = this.infoEnemy;
+    if (!e || !e.active || e.isDead) {
+      this.hideEnemyInfo();
+      return;
+    }
+    const NAMES = {
+      normal: 'Обычный',
+      fast: 'Быстрый',
+      armored: 'Бронированный',
+      tank: 'Танк',
+      splitter: 'Делящийся',
+      small: 'Мелкий',
+      shielded: 'Щитоносец',
+      boss: 'Босс',
+    };
+    let text = `${NAMES[e.typeKey] || e.typeKey}\nHP ${Math.max(0, Math.ceil(e.hp))}/${e.maxHp}`;
+    if (e.shield > 0) text += `\nЩит ${Math.ceil(e.shield)}`;
+    this.enemyInfoText.setText(text);
+
+    const pos = this.worldPxToScreen(e.x, e.y);
+    const width = this.scale.width;
+    const height = this.scale.height;
+    const bw = this.enemyInfoBg.width;
+    const bh = this.enemyInfoBg.height;
+    const x = Phaser.Math.Clamp(pos.x + 60 * DPR, bw / 2 + 4, width - bw / 2 - 4);
+    const y = Phaser.Math.Clamp(pos.y, bh / 2 + 4, height - bh / 2 - 4);
+    this.enemyInfoBg.setPosition(x, y);
+    this.enemyInfoText.setPosition(x, y);
+  }
+
+  // ---------------------- Маркер выбранной башни ----------------------
+  drawTowerMarker(x, y, footprintUnits) {
+    const g = this.markerGraphics;
+    if (!g) return;
+    g.clear();
+    const a = ISO_HW * Math.SQRT2 * footprintUnits * 1.2;
+    const b = ISO_HH * Math.SQRT2 * footprintUnits * 1.2;
+    g.lineStyle(3, 0xffe600, 0.95);
+    g.strokeEllipse(x, y, a * 2, b * 2);
+    const topY = y - b - 6;
+    g.fillStyle(0xffe600, 1);
+    g.fillTriangle(x - 9, topY - 10, x + 9, topY - 10, x, topY);
+  }
+
+  clearTowerMarker() {
+    if (this.markerGraphics) this.markerGraphics.clear();
   }
 
 
@@ -1533,6 +1687,7 @@ class GameScene extends Phaser.Scene {
       this.playerRole = data.role || 'player';
       if (data.best) this.playerBest = data.best;
       this.updateUI();
+      this.updateStaffUI();
     } catch (error) {
       console.warn('Не удалось загрузить роль:', error);
     }
@@ -1569,6 +1724,8 @@ class GameScene extends Phaser.Scene {
     this.setBuildMenuVisible(false); // прячем панель постройки
     this.ghost.setVisible(false); // прячем призрак башни
     this.clearRangeRing(); // убираем кольцо радиуса
+    this.hideEnemyInfo();
+    this.updateStaffUI(); // прячем кнопку ускорения
 
     // Небольшой эффект появления.
     this.gameOverText.setScale(0.5);
@@ -1590,6 +1747,7 @@ class GameScene extends Phaser.Scene {
   // Открыть меню выбранной башни.
   openTowerMenu(tower) {
     this.selectedTower = tower;
+    this.hideEnemyInfo();
     // Показываем все части меню.
     for (const part of this.towerMenuParts) part.setVisible(true);
     this.refreshTowerMenu();
@@ -2113,6 +2271,13 @@ class GameScene extends Phaser.Scene {
     this.menuButton.setStyle({ fontSize: `${Math.round(uiSize * 0.9)}px` });
     this.menuButton.setVisible(!this.isGameOver);
 
+    // Кнопка ускорения (стафф) — слева, под кнопкой меню.
+    if (this.speedButton) {
+      this.speedButton.setPosition(pad, pad + uiSize * 1.9);
+      this.speedButton.setStyle({ fontSize: `${Math.round(uiSize * 0.8)}px` });
+      this.updateStaffUI();
+    }
+
     this.messageText.setPosition(width / 2, height * 0.8);
     this.messageText.setStyle({ fontSize: `${Math.round(uiSize * 0.9)}px` });
 
@@ -2519,15 +2684,17 @@ class GameScene extends Phaser.Scene {
     this.strokeIsoEllipse(x, y, rangeUnits, color, 0.8, 3);
   }
 
-  // Кольца конкретной башни (радиус атаки + её площадь).
+  // Кольца конкретной башни (радиус атаки + её площадь) + маркер выбора.
   showRangeRingForTower(tower) {
     const pos = tower.getPosition();
     this.showRangeRing(pos.x, pos.y, tower.range, tower.config.color, tower.config.footprint / 2);
+    this.drawTowerMarker(pos.x, pos.y, tower.config.footprint / 2);
   }
 
-  // Убрать кольца.
+  // Убрать кольца и маркер.
   clearRangeRing() {
     if (this.rangeGraphics) this.rangeGraphics.clear();
+    this.clearTowerMarker();
   }
 
   // ------------------------- Волны -------------------------
@@ -2729,6 +2896,16 @@ class GameScene extends Phaser.Scene {
       return;
     }
 
+    // Тап по врагу (телефон) — окошко с HP. По пустому месту — прячем.
+    if (this.isTouch) {
+      const enemyHit = this.enemyAt(worldPx.x, worldPx.y);
+      if (enemyHit) {
+        this.showEnemyInfo(enemyHit);
+        return;
+      }
+      this.hideEnemyInfo();
+    }
+
     // Клик по пустому месту — закрываем меню.
     this.closeTowerMenu();
     if (gx < 0 || gx > WORLD_SIZE || gy < 0 || gy > WORLD_SIZE) return;
@@ -2875,9 +3052,20 @@ class GameScene extends Phaser.Scene {
     if (this.isGameOver) return;
 
     // Одним пальцем/мышью — панорамируем камеру (если потянули по пустому месту).
-    if (this.handlePan(pointer)) return;
+    if (this.handlePan(pointer)) {
+      this.hideEnemyInfo();
+      return;
+    }
 
     const { gx, gy } = this.pointerToGrid(pointer);
+
+    // ПК: наведение на врага — окошко с HP.
+    if (!this.isTouch) {
+      const worldPx = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
+      const enemyHit = this.enemyAt(worldPx.x, worldPx.y);
+      if (enemyHit) this.showEnemyInfo(enemyHit);
+      else if (this.infoEnemy) this.hideEnemyInfo();
+    }
 
     // Показываем призрак будущей башни под указателем.
     this.updateGhost(gx, gy);
@@ -2950,6 +3138,8 @@ class GameScene extends Phaser.Scene {
   update(time, delta) {
     if (this.isGameOver) return; // игра остановлена
 
+    delta *= this.timeScale; // ускорение времени (стафф)
+
     // Враги (движение — в world-координатах по Route).
     for (const enemy of this.enemies) {
       if (!enemy.isDead) {
@@ -2971,6 +3161,9 @@ class GameScene extends Phaser.Scene {
     // Чистим удалённые объекты.
     this.enemies = this.enemies.filter((enemy) => enemy.active);
     this.projectiles = this.projectiles.filter((projectile) => projectile.active);
+
+    // Окошко с HP врага — держим актуальным.
+    if (this.infoEnemy) this.updateEnemyInfo();
 
     // Проверяем, не закончилась ли волна.
     this.checkWaveEnd();
