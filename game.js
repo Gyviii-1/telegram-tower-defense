@@ -3018,15 +3018,13 @@ class GameScene extends Phaser.Scene {
       return;
     }
 
-    // Тап по врагу (телефон) — окошко с HP. По пустому месту — прячем.
-    if (this.isTouch) {
-      const enemyHit = this.enemyAt(worldPx.x, worldPx.y);
-      if (enemyHit) {
-        this.showEnemyInfo(enemyHit);
-        return;
-      }
-      this.hideEnemyInfo();
+    // Клик/тап по врагу — жёлтый кружок и окошко с HP. По пустому — прячем.
+    const enemyHit = this.enemyAt(worldPx.x, worldPx.y);
+    if (enemyHit) {
+      this.showEnemyInfo(enemyHit);
+      return;
     }
+    this.hideEnemyInfo();
 
     // Клик по пустому месту — закрываем меню.
     this.closeTowerMenu();
@@ -3180,14 +3178,6 @@ class GameScene extends Phaser.Scene {
     }
 
     const { gx, gy } = this.pointerToGrid(pointer);
-
-    // ПК: наведение на врага — окошко с HP.
-    if (!this.isTouch) {
-      const worldPx = this.cameras.main.getWorldPoint(pointer.x, pointer.y);
-      const enemyHit = this.enemyAt(worldPx.x, worldPx.y);
-      if (enemyHit) this.showEnemyInfo(enemyHit);
-      else if (this.infoEnemy) this.hideEnemyInfo();
-    }
 
     // Показываем призрак будущей башни под указателем.
     this.updateGhost(gx, gy);
