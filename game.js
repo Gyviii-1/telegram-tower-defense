@@ -1355,9 +1355,9 @@ class GameScene extends Phaser.Scene {
       .setDepth(90)
       .setVisible(false);
 
-    // Крупный текст Game Over.
+    // Крупный текст поражения.
     this.gameOverText = this.add
-      .text(0, 0, 'GAME OVER', {
+      .text(0, 0, 'ТЫ ПРОИГРАЛ', {
         fontFamily: 'Arial, sans-serif',
         fontSize: '64px',
         color: '#e74c3c',
@@ -1390,6 +1390,27 @@ class GameScene extends Phaser.Scene {
     this.restartButton.on('pointerdown', (pointer, localX, localY, event) => {
       if (event && event.stopPropagation) event.stopPropagation();
       this.restartGame();
+    });
+
+    // Кнопка выхода в меню на экране поражения.
+    this.gameOverMenuButton = this.add
+      .text(0, 0, 'МЕНЮ', {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: '28px',
+        color: '#ffffff',
+        backgroundColor: '#34495e',
+        padding: { x: 24 * DPR, y: 12 * DPR },
+        stroke: '#000000',
+        strokeThickness: 3 * DPR,
+        fontStyle: 'bold',
+      })
+      .setOrigin(0.5)
+      .setInteractive({ useHandCursor: true })
+      .setDepth(101)
+      .setVisible(false);
+    this.gameOverMenuButton.on('pointerdown', (pointer, localX, localY, event) => {
+      if (event && event.stopPropagation) event.stopPropagation();
+      this.scene.start('MenuScene');
     });
 
     // Меню башни (улучшение/продажа).
@@ -1531,6 +1552,7 @@ class GameScene extends Phaser.Scene {
       this.overlay,
       this.gameOverText,
       this.restartButton,
+      this.gameOverMenuButton,
       this.speedButton,
       this.enemyInfoBg,
       this.enemyInfoText,
@@ -1721,7 +1743,10 @@ class GameScene extends Phaser.Scene {
     this.overlay.setVisible(true);
     this.gameOverText.setVisible(true);
     this.startButton.setVisible(false); // убираем кнопку старта волны
+    this.uiText.setVisible(false); // убираем панель игрока (ник/волна/жизни/золото)
+    this.menuButton.setVisible(false); // убираем верхнюю кнопку меню
     this.restartButton.setVisible(true); // показываем кнопку перезапуска
+    this.gameOverMenuButton.setVisible(true); // и кнопку меню
     this.closeTowerMenu(); // прячем меню башни, если оно было открыто
     this.setBuildMenuVisible(false); // прячем панель постройки
     this.ghost.setVisible(false); // прячем призрак башни
@@ -2259,6 +2284,7 @@ class GameScene extends Phaser.Scene {
 
     this.uiText.setPosition(width - pad, pad);
     this.uiText.setStyle({ fontSize: `${Math.round(uiSize)}px` });
+    this.uiText.setVisible(!this.isGameOver);
 
     // Кнопка старта волны — сверху по центру. На телефоне опускаем ниже,
     // чтобы не упиралась в шапку Telegram / верхний отступ.
@@ -2289,10 +2315,17 @@ class GameScene extends Phaser.Scene {
     this.gameOverText.setPosition(width / 2, height / 2);
     this.gameOverText.setStyle({ fontSize: `${Math.round(Math.min(width, height) * 0.13)}px` });
 
-    // Кнопка перезапуска — под надписью GAME OVER; видна только на проигрыше.
+    // Кнопка перезапуска — под надписью; видна только на проигрыше.
     this.restartButton.setPosition(width / 2, height / 2 + Math.min(width, height) * 0.16);
     this.restartButton.setStyle({ fontSize: `${Math.round(Math.min(width, height) * 0.05)}px` });
     this.restartButton.setVisible(this.isGameOver);
+
+    // Кнопка «Меню» на экране поражения.
+    this.gameOverMenuButton.setPosition(width / 2, height / 2 + Math.min(width, height) * 0.26);
+    this.gameOverMenuButton.setStyle({
+      fontSize: `${Math.round(Math.min(width, height) * 0.05)}px`,
+    });
+    this.gameOverMenuButton.setVisible(this.isGameOver);
 
     // Если меню башни открыто — пересчитываем позицию и кольцо под новый размер.
     if (this.selectedTower) {
