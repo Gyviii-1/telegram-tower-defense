@@ -1165,6 +1165,7 @@ class GameScene extends Phaser.Scene {
 
     // Ускорение времени (для тестеров) и тип ввода (тач/мышь).
     this.timeScale = 1;
+    this.infiniteLives = false;
     this.isTouch = this.game.device.input.touch;
     this.infoEnemy = null;
 
@@ -1499,12 +1500,13 @@ class GameScene extends Phaser.Scene {
       .setDepth(40)
       .setVisible(false);
 
-    // Кнопка ускорения времени — только для стаффа (тестер/создатель).
-    this.speedButton = this.add
-      .text(0, 0, '⏩ x1', {
+    // Чит-меню — только для стаффа (тестер/создатель) и локали.
+    this.cheatOpen = false;
+    this.cheatButton = this.add
+      .text(0, 0, '🛠', {
         fontFamily: 'Arial, sans-serif',
-        fontSize: `${18 * DPR}px`,
-        color: '#f1c40f',
+        fontSize: `${20 * DPR}px`,
+        color: '#ffffff',
         backgroundColor: '#00000088',
         padding: { x: 10 * DPR, y: 6 * DPR },
         stroke: '#000000',
@@ -1513,12 +1515,48 @@ class GameScene extends Phaser.Scene {
       .setOrigin(0, 0)
       .setDepth(100)
       .setScrollFactor(0)
-      .setVisible(false);
-    this.speedButton.on('pointerdown', (pointer, localX, localY, event) => {
+      .setVisible(false)
+      .setInteractive({ useHandCursor: true });
+    this.cheatButton.on('pointerdown', (pointer, localX, localY, event) => {
       if (event && event.stopPropagation) event.stopPropagation();
-      this.cycleSpeed();
+      this.toggleCheat();
     });
-    this.speedButton.setInteractive({ useHandCursor: true });
+
+    const makeCheatButton = (label, handler) => {
+      const t = this.add
+        .text(0, 0, label, {
+          fontFamily: 'Arial, sans-serif',
+          fontSize: `${14 * DPR}px`,
+          color: '#ffffff',
+          backgroundColor: '#1f2b3a',
+          padding: { x: 10 * DPR, y: 6 * DPR },
+        })
+        .setOrigin(0, 0)
+        .setDepth(103)
+        .setScrollFactor(0)
+        .setVisible(false)
+        .setInteractive({ useHandCursor: true });
+      t.on('pointerdown', (pointer, localX, localY, event) => {
+        if (event && event.stopPropagation) event.stopPropagation();
+        handler();
+      });
+      return t;
+    };
+
+    this.cheatGoldButton = makeCheatButton('💰 +1000 золота', () => {
+      this.gold += 1000;
+      this.updateUI();
+      this.showMessage('+1000 золота');
+    });
+    this.cheatLivesButton = makeCheatButton('❤ Жизни ∞: выкл', () => this.toggleInfiniteLives());
+    this.cheatSpeedButton = makeCheatButton('⏩ Скорость: x1', () => this.cycleSpeed());
+    this.cheatKillButton = makeCheatButton('💀 Убить всех', () => this.killAllEnemies());
+    this.cheatParts = [
+      this.cheatGoldButton,
+      this.cheatLivesButton,
+      this.cheatSpeedButton,
+      this.cheatKillButton,
+    ];
 
     // Окошко с HP врага (наведение на ПК / тап по врагу на телефоне).
     this.enemyInfoBg = this.add
@@ -1553,7 +1591,11 @@ class GameScene extends Phaser.Scene {
       this.gameOverText,
       this.restartButton,
       this.gameOverMenuButton,
-      this.speedButton,
+      this.cheatButton,
+      this.cheatGoldButton,
+      this.cheatLivesButton,
+      this.cheatSpeedButton,
+      this.cheatKillButton,
       this.enemyInfoBg,
       this.enemyInfoText,
     ];
@@ -1580,16 +1622,29 @@ class GameScene extends Phaser.Scene {
     return '';
   }
 
-  // ---------------------- Ускорение времени (стафф) ----------------------
+  // ---------------------- Чит-меню (стафф/локал) ----------------------
   updateStaffUI() {
     const host = window.location.hostname;
     const isLocal = host === 'localhost' || host === '127.0.0.1';
     const staff = this.playerRole === 'tester' || this.playerRole === 'creator' || isLocal;
-    if (this.speedButton) this.speedButton.setVisible(staff && !this.isGameOver);
+    const show = staff && !this.isGameOver;
+    if (this.cheatButton) this.cheatButton.setVisible(show);
+    if (!show) {
+      this.cheatOpen = false;
+      if (this.cheatParts) for (const p of this.cheatParts) p.setVisible(false);
+    } else if (this.cheatOpen && this.cheatParts) {
+      for (const p of this.cheatParts) p.setVisible(true);
+    }
+  }
+
+  toggleCheat() {
+    this.cheatOpen = !this.cheatOpen;
+    const show = this.cheatOpen && !this.isGameOver;
+    if (this.cheatParts) for (const p of this.cheatParts) p.setVisible(show);
   }
 
   cycleSpeed() {
-    const steps = [1, 2, 3, 4];
+    const steps = [1, 2, 3, 5, 10];
     const idx = steps.indexOf(this.timeScale);
     this.timeScale = steps[(idx + 1) % steps.length];
     this.applyTimeScale();
@@ -1599,7 +1654,20 @@ class GameScene extends Phaser.Scene {
     const s = this.timeScale;
     if (this.time) this.time.timeScale = s;
     if (this.tweens) this.tweens.timeScale = s;
-    if (this.speedButton) this.speedButton.setText(`⏩ x${s}`);
+    if (this.cheatSpeedButton) this.cheatSpeedButton.setText(`⏩ Скорость: x${s}`);
+  }
+
+  toggleInfiniteLives() {
+    this.infiniteLives = !this.infiniteLives;
+    if (this.cheatLivesButton) {
+      this.cheatLivesButton.setText(`❤ Жизни ∞: ${this.infiniteLives ? 'вкл' : 'выкл'}`);
+    }
+  }
+
+  killAllEnemies() {
+    for (const enemy of [...this.enemies]) {
+      if (enemy.active && !enemy.isDead) enemy.takeDamage(1e9);
+    }
   }
 
   // ---------------------- Информация о враге ----------------------
@@ -2025,6 +2093,7 @@ class GameScene extends Phaser.Scene {
   // Враг дошёл до конца дороги — отнимаем жизни, при 0 запускаем Game Over.
   onEnemyReachedEnd(enemy) {
     if (this.isGameOver) return;
+    if (this.infiniteLives) return; // чит: жизни не тратятся
 
     const damage = (enemy && enemy.config.livesDamage) || 1;
     this.lives = Math.max(0, this.lives - damage);
@@ -2299,10 +2368,16 @@ class GameScene extends Phaser.Scene {
     this.menuButton.setStyle({ fontSize: `${Math.round(uiSize * 0.9)}px` });
     this.menuButton.setVisible(!this.isGameOver);
 
-    // Кнопка ускорения (стафф) — слева, под кнопкой меню.
-    if (this.speedButton) {
-      this.speedButton.setPosition(pad, pad + uiSize * 1.9);
-      this.speedButton.setStyle({ fontSize: `${Math.round(uiSize * 0.8)}px` });
+    // Чит-меню (стафф/локал) — слева, под кнопкой меню.
+    if (this.cheatButton) {
+      this.cheatButton.setPosition(pad, pad + uiSize * 1.9);
+      this.cheatButton.setStyle({ fontSize: `${Math.round(uiSize * 0.9)}px` });
+      const cy = pad + uiSize * 3.2;
+      const rowH = uiSize * 1.6;
+      this.cheatParts.forEach((p, i) => {
+        p.setPosition(pad, cy + i * rowH);
+        p.setStyle({ fontSize: `${Math.round(uiSize * 0.6)}px` });
+      });
       this.updateStaffUI();
     }
 
