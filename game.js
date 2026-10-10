@@ -1560,7 +1560,9 @@ class GameScene extends Phaser.Scene {
 
   // ---------------------- Ускорение времени (стафф) ----------------------
   updateStaffUI() {
-    const staff = this.playerRole === 'tester' || this.playerRole === 'creator';
+    const host = window.location.hostname;
+    const isLocal = host === 'localhost' || host === '127.0.0.1';
+    const staff = this.playerRole === 'tester' || this.playerRole === 'creator' || isLocal;
     if (this.speedButton) this.speedButton.setVisible(staff && !this.isGameOver);
   }
 
