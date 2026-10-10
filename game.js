@@ -1166,6 +1166,7 @@ class GameScene extends Phaser.Scene {
     // Ускорение времени (для тестеров) и тип ввода (тач/мышь).
     this.timeScale = 1;
     this.infiniteLives = false;
+    this.autoWave = false;
     this.isTouch = this.game.device.input.touch;
     this.infoEnemy = null;
 
@@ -1551,11 +1552,13 @@ class GameScene extends Phaser.Scene {
     this.cheatLivesButton = makeCheatButton('❤ Жизни ∞: выкл', () => this.toggleInfiniteLives());
     this.cheatSpeedButton = makeCheatButton('⏩ Скорость: x1', () => this.cycleSpeed());
     this.cheatKillButton = makeCheatButton('💀 Убить всех', () => this.killAllEnemies());
+    this.cheatSkipButton = makeCheatButton('⏭ Авто-волна: выкл', () => this.toggleAutoWave());
     this.cheatParts = [
       this.cheatGoldButton,
       this.cheatLivesButton,
       this.cheatSpeedButton,
       this.cheatKillButton,
+      this.cheatSkipButton,
     ];
 
     // Окошко с HP врага (наведение на ПК / тап по врагу на телефоне).
@@ -1596,6 +1599,7 @@ class GameScene extends Phaser.Scene {
       this.cheatLivesButton,
       this.cheatSpeedButton,
       this.cheatKillButton,
+      this.cheatSkipButton,
       this.enemyInfoBg,
       this.enemyInfoText,
     ];
@@ -1667,6 +1671,13 @@ class GameScene extends Phaser.Scene {
   killAllEnemies() {
     for (const enemy of [...this.enemies]) {
       if (enemy.active && !enemy.isDead) enemy.takeDamage(1e9);
+    }
+  }
+
+  toggleAutoWave() {
+    this.autoWave = !this.autoWave;
+    if (this.cheatSkipButton) {
+      this.cheatSkipButton.setText(`⏭ Авто-волна: ${this.autoWave ? 'вкл' : 'выкл'}`);
     }
   }
 
@@ -2923,6 +2934,11 @@ class GameScene extends Phaser.Scene {
     this.updateUI();
     this.startButton.setVisible(true);
     this.showMessage(`Волна ${this.currentWave} зачищена! +${WAVE_CLEAR_BONUS} золота`);
+
+    // Чит: авто-старт следующей волны.
+    if (this.autoWave && !this.isGameOver) {
+      this.time.delayedCall(300, () => this.startNextWave());
+    }
   }
 
   // Экран -> world: через камеру и централизованный screenToWorld.
