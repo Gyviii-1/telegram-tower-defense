@@ -1581,8 +1581,8 @@ class GameScene extends Phaser.Scene {
       .setScrollFactor(0)
       .setVisible(false);
 
-    // Яркое кольцо-маркер выбранной башни (в мировых координатах).
-    this.markerGraphics = this.add.graphics().setDepth(2);
+    // Жёлтый кружок вокруг врага (в мировых координатах, поверх юнитов).
+    this.markerGraphics = this.add.graphics().setDepth(50);
 
     // UI фиксируется на экране (не двигается и не масштабируется камерой).
     const fixedUI = [
@@ -1710,6 +1710,7 @@ class GameScene extends Phaser.Scene {
     this.infoEnemy = null;
     if (this.enemyInfoBg) this.enemyInfoBg.setVisible(false);
     if (this.enemyInfoText) this.enemyInfoText.setVisible(false);
+    this.clearEnemyMarker();
   }
 
   updateEnemyInfo() {
@@ -1741,23 +1742,20 @@ class GameScene extends Phaser.Scene {
     const y = Phaser.Math.Clamp(pos.y, bh / 2 + 4, height - bh / 2 - 4);
     this.enemyInfoBg.setPosition(x, y);
     this.enemyInfoText.setPosition(x, y);
+    this.drawEnemyMarker(e);
   }
 
-  // ---------------------- Маркер выбранной башни ----------------------
-  drawTowerMarker(x, y, footprintUnits) {
+  // ---------------------- Маркер врага (жёлтый кружок) ----------------------
+  drawEnemyMarker(enemy) {
     const g = this.markerGraphics;
-    if (!g) return;
+    if (!g || !enemy) return;
     g.clear();
-    const a = ISO_HW * Math.SQRT2 * footprintUnits * 1.2;
-    const b = ISO_HH * Math.SQRT2 * footprintUnits * 1.2;
+    const r = Math.max(enemy.displayWidth, enemy.displayHeight) / 2 + 5;
     g.lineStyle(3, 0xffe600, 0.95);
-    g.strokeEllipse(x, y, a * 2, b * 2);
-    const topY = y - b - 6;
-    g.fillStyle(0xffe600, 1);
-    g.fillTriangle(x - 9, topY - 10, x + 9, topY - 10, x, topY);
+    g.strokeCircle(enemy.x, enemy.y, r);
   }
 
-  clearTowerMarker() {
+  clearEnemyMarker() {
     if (this.markerGraphics) this.markerGraphics.clear();
   }
 
@@ -2805,17 +2803,15 @@ class GameScene extends Phaser.Scene {
     this.strokeIsoEllipse(x, y, rangeUnits, color, 0.8, 3);
   }
 
-  // Кольца конкретной башни (радиус атаки + её площадь) + маркер выбора.
+  // Кольца конкретной башни (радиус атаки + её площадь).
   showRangeRingForTower(tower) {
     const pos = tower.getPosition();
     this.showRangeRing(pos.x, pos.y, tower.range, tower.config.color, tower.config.footprint / 2);
-    this.drawTowerMarker(pos.x, pos.y, tower.config.footprint / 2);
   }
 
-  // Убрать кольца и маркер.
+  // Убрать кольца.
   clearRangeRing() {
     if (this.rangeGraphics) this.rangeGraphics.clear();
-    this.clearTowerMarker();
   }
 
   // ------------------------- Волны -------------------------
